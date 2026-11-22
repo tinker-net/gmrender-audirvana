@@ -76,7 +76,8 @@ int upnp_add_response(struct action_event *event,
 	int rc = UpnpAddToActionResponse(&actionResult, actionName,
 				     event->service->service_type, key, value);
 	if (rc != UPNP_E_SUCCESS) {
-		/* report custom error */
+		/* Preserve failure even if the action handler returns success. */
+		event->status = -1;
 		UpnpString *errorMessage = UpnpString_new();
 		UpnpString_set_String(errorMessage, UpnpGetErrorMessage(rc));
 		UpnpActionRequest_set_ActionResult(event->request, NULL);
@@ -119,7 +120,7 @@ void upnp_set_error(struct action_event *event, int error_code,
 	va_end(ap);
 
 	UpnpActionRequest_set_ActionResult(event->request, NULL);
-	UpnpActionRequest_set_ErrCode(event->request, UPNP_SOAP_E_ACTION_FAILED);
+	UpnpActionRequest_set_ErrCode(event->request, error_code);
 	UpnpString *errStr = UpnpString_new();
 	UpnpString_set_String(errStr, buffer);
 	UpnpActionRequest_set_ErrStr(event->request, errStr);
@@ -341,7 +342,7 @@ static int handle_action_request(struct upnp_device *priv,
                 event.device = priv;
 
 		rc = (event_action->callback) (&event);
-		if (rc == 0) {
+		if (rc == 0 && event.status == 0) {
 			UpnpActionRequest_set_ErrCode(event.request, UPNP_E_SUCCESS);
 #ifdef ENABLE_ACTION_LOGGING
 			if (UpnpActionRequest_get_ActionResult(ar_event)) {
@@ -356,9 +357,16 @@ static int handle_action_request(struct upnp_device *priv,
 					 UpnpActionRequest_get_ActionName_cstr(ar_event));
 			}
 #endif
+		} else {
+			/* Do not turn a failed action into an empty success response. */
+			if (UpnpActionRequest_get_ErrCode(event.request) == UPNP_E_SUCCESS) {
+				upnp_set_error(&event, UPNP_SOAP_E_ACTION_FAILED,
+				               "Action failed");
+			}
+			UpnpActionRequest_set_ActionResult(event.request, NULL);
 		}
 		IXML_Document *actionResult = UpnpActionRequest_get_ActionResult(ar_event);
-		if (actionResult == NULL) {
+		if (rc == 0 && event.status == 0 && actionResult == NULL) {
 			actionResult = UpnpMakeActionResponse(actionName,
 						   event_service->service_type, 0, NULL);
 			UpnpActionRequest_set_ActionResult(event.request, actionResult);
@@ -379,7 +387,8 @@ static int handle_action_request(struct upnp_device *priv,
 			  "  DevUDN:     '%s'\n"
 			  "  ServiceID:  '%s'\n",
 			  errCode, sock, errStr, actionName, devUDN, serviceID);
-		UpnpActionRequest_set_ErrCode(ar_event, UPNP_E_SUCCESS);
+		UpnpActionRequest_set_ActionResult(ar_event, NULL);
+		UpnpActionRequest_set_ErrCode(ar_event, UPNP_SOAP_E_ACTION_FAILED);
 	}
 
 	if (event_service->last_change) {   // See comment above.
