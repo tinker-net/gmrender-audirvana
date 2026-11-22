@@ -481,6 +481,7 @@ static int replace_transport_uri_and_meta(const char *uri, const char *meta) {
 	// we have exactly one track.
 	const char *tracks = (uri != NULL && strlen(uri) > 0) ? "1" : "0";
 	replace_var(TRANSPORT_VAR_NR_TRACKS, tracks);
+	replace_var(TRANSPORT_VAR_PLAY_MEDIUM, *uri ? "NETWORK" : "NONE");
 
 	// We only really want to send back meta data if we didn't get anything
 	// useful or if this is an audio item.
@@ -501,24 +502,22 @@ static void change_transport_state(enum transport_state new_state) {
 	transport_state_ = new_state;
 	assert(new_state >= TRANSPORT_STOPPED
 	       && new_state < TRANSPORT_NO_MEDIA_PRESENT);
-	if (!replace_var(TRANSPORT_VAR_TRANSPORT_STATE,
-			 transport_states[new_state])) {
-		return;  // no change.
-	}
+	/* Available actions may change even while the transport state stays STOPPED. */
+	replace_var(TRANSPORT_VAR_TRANSPORT_STATE, transport_states[new_state]);
 	const char *available_actions = NULL;
 	switch (new_state) {
 	case TRANSPORT_STOPPED:
 		if (strlen(get_var(TRANSPORT_VAR_AV_URI)) == 0) {
-			available_actions = "PLAY";
+			available_actions = "";
 		} else {
-			available_actions = "PLAY,SEEK";
+			available_actions = "Play,Seek";
 		}
 		break;
 	case TRANSPORT_PLAYING:
-		available_actions = "PAUSE,STOP,SEEK";
+		available_actions = "Pause,Stop,Seek";
 		break;
 	case TRANSPORT_PAUSED_PLAYBACK:
-		available_actions = "PLAY,STOP,SEEK";
+		available_actions = "Play,Stop,Seek";
 		break;
 	case TRANSPORT_TRANSITIONING:
 	case TRANSPORT_PAUSED_RECORDING:
@@ -565,6 +564,27 @@ static int set_avtransport_uri(struct action_event *event)
 		service_unlock();
 		return -1;
 	}
+	/* Audirvana explicitly resets the transport with an empty URI. */
+	if (*uri == '\0') {
+		if (output_stop() != 0) {
+			upnp_set_error(event, UPNP_TRANSPORT_E_READ_ERROR, "Unable to reset transport");
+			service_unlock();
+			return -1;
+		}
+		output_set_next_uri("");
+		output_set_uri("", NULL);
+		replace_transport_uri_and_meta("", "");
+		replace_current_uri_and_meta("", "");
+		replace_var(TRANSPORT_VAR_NEXT_AV_URI, "");
+		replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, "");
+		replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_CUR_MEDIA_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_REL_TIME_POS, kZeroTime);
+		replace_var(TRANSPORT_VAR_TRANSPORT_STATUS, "OK");
+		change_transport_state(TRANSPORT_STOPPED);
+		service_unlock();
+		return 0;
+	}
 	// Transport URI/Meta set now, current URI/Meta when it starts playing.
 	int requires_meta_update = replace_transport_uri_and_meta(uri, meta);
 
@@ -580,6 +600,7 @@ static int set_avtransport_uri(struct action_event *event)
 	output_set_uri(uri, (requires_meta_update
 			     ? update_meta_from_stream
 			     : NULL));
+	change_transport_state(transport_state_);
 	service_unlock();
 
 	return 0;
@@ -601,7 +622,7 @@ static int set_next_avtransport_uri(struct action_event *event)
 	service_lock();
 	output_set_next_uri(next_uri);
 	replace_var(TRANSPORT_VAR_NEXT_AV_URI, next_uri);
-	replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, next_uri_meta);
+	replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, *next_uri ? next_uri_meta : "");
 	service_unlock();
 	return 0;
 }
@@ -693,10 +714,11 @@ static void *thread_update_track_time(void *userdata) {
 		service_lock();
 		gint64 duration, position;
 		const int pos_result = output_get_position(&duration, &position);
-		if (pos_result == 0) {
+		if (pos_result == 0 && strlen(get_var(TRANSPORT_VAR_AV_URI)) > 0) {
 			if (duration != last_duration) {
 				print_upnp_time(tbuf, sizeof(tbuf), duration);
 				replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, tbuf);
+				replace_var(TRANSPORT_VAR_CUR_MEDIA_DUR, tbuf);
 				last_duration = duration;
 			}
 			if (position / one_sec_unit != last_position) {
@@ -704,6 +726,8 @@ static void *thread_update_track_time(void *userdata) {
 				replace_var(TRANSPORT_VAR_REL_TIME_POS, tbuf);
 				last_position = position / one_sec_unit;
 			}
+		} else if (strlen(get_var(TRANSPORT_VAR_AV_URI)) == 0) {
+			last_duration = last_position = -1;
 		}
 		service_unlock();
 	}
@@ -949,7 +973,7 @@ struct service *upnp_transport_get_service(void) {
 		 EV_NO, DATATYPE_STRING, transport_states, NULL },
 		{TRANSPORT_VAR_TRANSPORT_STATUS, "TransportStatus", "OK",
 		 EV_NO, DATATYPE_STRING, transport_stati, NULL },
-		{TRANSPORT_VAR_PLAY_MEDIUM, "PlaybackStorageMedium", "UNKNOWN",
+		{TRANSPORT_VAR_PLAY_MEDIUM, "PlaybackStorageMedium", "NONE",
 		 EV_NO, DATATYPE_STRING, media, NULL },
 		{TRANSPORT_VAR_REC_MEDIUM, "RecordStorageMedium", "NOT_IMPLEMENTED",
 		 EV_NO, DATATYPE_STRING, media, NULL },
@@ -973,7 +997,7 @@ struct service *upnp_transport_get_service(void) {
 		 EV_NO, DATATYPE_UI4, NULL, &track_range },
 		{TRANSPORT_VAR_CUR_TRACK_DUR, "CurrentTrackDuration", kZeroTime,
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
-		{TRANSPORT_VAR_CUR_MEDIA_DUR, "CurrentMediaDuration", "",
+		{TRANSPORT_VAR_CUR_MEDIA_DUR, "CurrentMediaDuration", kZeroTime,
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
 		{TRANSPORT_VAR_CUR_TRACK_META, "CurrentTrackMetaData", "",
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
@@ -1003,7 +1027,7 @@ struct service *upnp_transport_get_service(void) {
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
 		{TRANSPORT_VAR_AAT_INSTANCE_ID, "A_ARG_TYPE_InstanceID", "0",
 		 EV_NO, DATATYPE_UI4, NULL, NULL },
-		{TRANSPORT_VAR_CUR_TRANSPORT_ACTIONS, "CurrentTransportActions", "PLAY",
+		{TRANSPORT_VAR_CUR_TRANSPORT_ACTIONS, "CurrentTransportActions", "",
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
 
 		{TRANSPORT_VAR_COUNT, NULL, NULL, EV_NO, DATATYPE_UNKNOWN, NULL, NULL }
