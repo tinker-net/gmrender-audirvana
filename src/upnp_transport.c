@@ -74,7 +74,7 @@ enum {
 	// Not implemented
 	//TRANSPORT_CMD_NEXT,
 	//TRANSPORT_CMD_PREVIOUS,
-	//TRANSPORT_CMD_SETPLAYMODE,
+	TRANSPORT_CMD_SETPLAYMODE,
 	//TRANSPORT_CMD_RECORD,
 	//TRANSPORT_CMD_SETRECORDQUALITYMODE,
 
@@ -169,12 +169,6 @@ static const char *media[] = {
 
 static const char *playmodi[] = {
 	"NORMAL",
-	//"SHUFFLE",
-	//"REPEAT_ONE",
-	"REPEAT_ALL",
-	//"RANDOM",
-	//"DIRECT_1",
-	"INTRO",
 	NULL
 };
 
@@ -359,11 +353,11 @@ static struct argument arguments_seek[] = {
 //        { "InstanceID", PARAM_DIR_IN, TRANSPORT_VAR_AAT_INSTANCE_ID },
 //	{ NULL }
 //};
-//static struct argument arguments_setplaymode[] = {
-//        { "InstanceID", PARAM_DIR_IN, TRANSPORT_VAR_AAT_INSTANCE_ID },
-//        { "NewPlayMode", PARAM_DIR_IN, TRANSPORT_VAR_CUR_PLAY_MODE },
-//	{ NULL }
-//};
+static struct argument arguments_setplaymode[] = {
+        { "InstanceID", PARAM_DIR_IN, TRANSPORT_VAR_AAT_INSTANCE_ID },
+        { "NewPlayMode", PARAM_DIR_IN, TRANSPORT_VAR_CUR_PLAY_MODE },
+	{ NULL }
+};
 //static struct argument arguments_setrecordqualitymode[] = {
 //        { "InstanceID", PARAM_DIR_IN, TRANSPORT_VAR_AAT_INSTANCE_ID },
 //        { "NewRecordQualityMode", PARAM_DIR_IN, TRANSPORT_VAR_CUR_REC_QUAL_MODE },
@@ -394,7 +388,7 @@ static struct argument *argument_list[] = {
 	//[TRANSPORT_CMD_RECORD] =                    arguments_record,
 	//[TRANSPORT_CMD_NEXT] =                      arguments_next,
 	//[TRANSPORT_CMD_PREVIOUS] =                  arguments_previous,
-	//[TRANSPORT_CMD_SETPLAYMODE] =               arguments_setplaymode,
+	[TRANSPORT_CMD_SETPLAYMODE] =               arguments_setplaymode,
 	//[TRANSPORT_CMD_SETRECORDQUALITYMODE] =      arguments_setrecordqualitymode,
 	[TRANSPORT_CMD_COUNT] =	NULL
 };
@@ -436,7 +430,12 @@ static char has_instance_id(struct action_event *event)
 		upnp_set_error(event, UPNP_SOAP_E_INVALID_ARGS,
 			       "Missing InstanceID");
 	}
-	return value != NULL;
+	if (value == NULL) return 0;
+	if (strcmp(value, "0") != 0) {
+		upnp_set_error(event, UPNP_TRANSPORT_E_INVALID_IID, "Invalid InstanceID");
+		return 0;
+	}
+	return 1;
 }
 
 static int get_media_info(struct action_event *event)
@@ -454,7 +453,7 @@ static int get_media_info(struct action_event *event)
 	upnp_append_variable(event, TRANSPORT_VAR_NEXT_AV_URI, "NextURI");
 	upnp_append_variable(event, TRANSPORT_VAR_NEXT_AV_URI_META,
 			     "NextURIMetaData");
-	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIA, "PlayMedium");
+	upnp_append_variable(event, TRANSPORT_VAR_PLAY_MEDIUM, "PlayMedium");
 	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIUM, "RecordMedium");
 	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIUM_WR_STATUS,
 			     "WriteStatus");
@@ -562,6 +561,10 @@ static int set_avtransport_uri(struct action_event *event)
 
 	service_lock();
 	const char *meta = upnp_get_string(event, "CurrentURIMetaData");
+	if (meta == NULL) {
+		service_unlock();
+		return -1;
+	}
 	// Transport URI/Meta set now, current URI/Meta when it starts playing.
 	int requires_meta_update = replace_transport_uri_and_meta(uri, meta);
 
@@ -593,22 +596,14 @@ static int set_next_avtransport_uri(struct action_event *event)
 		return -1;
 	}
 
-	int rc = 0;
+	const char *next_uri_meta = upnp_get_string(event, "NextURIMetaData");
+	if (next_uri_meta == NULL) return -1;
 	service_lock();
-
 	output_set_next_uri(next_uri);
 	replace_var(TRANSPORT_VAR_NEXT_AV_URI, next_uri);
-
-	const char *next_uri_meta = upnp_get_string(event, "NextURIMetaData");
-	if (next_uri_meta == NULL) {
-		rc = -1;
-	} else {
-		replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, next_uri_meta);
-	}
-
+	replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, next_uri_meta);
 	service_unlock();
-
-	return rc;
+	return 0;
 }
 
 static int get_transport_info(struct action_event *event)
@@ -642,7 +637,24 @@ static int get_transport_settings(struct action_event *event)
 	if (!has_instance_id(event)) {
 		return -1;
 	}
-	// TODO: what variables to add ?
+	upnp_append_variable(event, TRANSPORT_VAR_CUR_PLAY_MODE, "PlayMode");
+	upnp_append_variable(event, TRANSPORT_VAR_CUR_REC_QUAL_MODE, "RecQualityMode");
+	return event->status;
+}
+
+static int set_play_mode(struct action_event *event) {
+	if (!has_instance_id(event)) return -1;
+	const char *mode = upnp_get_string(event, "NewPlayMode");
+	if (mode == NULL) return -1;
+	/* The control point owns the playback queue. */
+	if (strcmp(mode, "NORMAL") != 0) {
+		upnp_set_error(event, UPNP_TRANSPORT_E_PLAYMODE_NS,
+		               "Unsupported play mode: %s", mode);
+		return -1;
+	}
+	service_lock();
+	replace_var(TRANSPORT_VAR_CUR_PLAY_MODE, mode);
+	service_unlock();
 	return 0;
 }
 
@@ -723,8 +735,10 @@ static int get_device_caps(struct action_event *event)
 	if (!has_instance_id(event)) {
 		return -1;
 	}
-	// TODO: implement ?
-	return 0;
+	upnp_append_variable(event, TRANSPORT_VAR_PLAY_MEDIA, "PlayMedia");
+	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIA, "RecMedia");
+	upnp_append_variable(event, TRANSPORT_VAR_POS_REC_QUAL_MODE, "RecQualityModes");
+	return event->status;
 }
 
 static int stop(struct action_event *event)
@@ -908,7 +922,7 @@ static struct action transport_actions[] = {
 	//[TRANSPORT_CMD_RECORD] =                    {"Record", NULL},	/* optional */
 	//[TRANSPORT_CMD_NEXT] =                      {"Next", next},
 	//[TRANSPORT_CMD_PREVIOUS] =                  {"Previous", previous},
-	//[TRANSPORT_CMD_SETPLAYMODE] =               {"SetPlayMode", NULL},	/* optional */
+	[TRANSPORT_CMD_SETPLAYMODE] =               {"SetPlayMode", set_play_mode},
 	//[TRANSPORT_CMD_SETRECORDQUALITYMODE] =      {"SetRecordQualityMode", NULL},	/* optional */
 
 	[TRANSPORT_CMD_COUNT] =                  {NULL, NULL}
