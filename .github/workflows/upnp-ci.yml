@@ -1,0 +1,46 @@
+name: Build and UPnP smoke test
+
+on:
+  push:
+    branches: [master, audirvana-compat]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libupnp-dev libgstreamer1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - name: Build renderer
+        run: |
+          ./autogen.sh
+          ./configure
+          make -j2
+      - name: Run SOAP regression tests using a disposable renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          iface=$(ip -4 route show default | awk 'NR==1 {print $5}')
+          address=$(ip -4 -o addr show dev "$iface" scope global | awk 'NR==1 {split($4, a, "/"); print a[1]}')
+          test -n "$address"
+          ./src/gmediarender --interface-name="$iface" --port=49494 --friendly-name="CI-test-renderer" --uuid=00000000-0000-4000-8000-000000000001 --gstout-audiosink=fakesink --logfile=stdout > renderer.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; cat renderer.log' EXIT
+          base="http://$address:49494"
+          for i in $(seq 1 30); do
+            if curl --noproxy '*' -fsS "$base/upnp/rendertransportSCPD.xml" >/dev/null; then
+              break
+            fi
+            kill -0 "$pid"
+            sleep 1
+          done
+          NO_PROXY="$address" no_proxy="$address" python3 tests/upnp_smoke.py "$base" --test-instance
