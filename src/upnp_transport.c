@@ -537,9 +537,9 @@ static void update_meta_from_stream(const struct SongMetaData *meta) {
 	if (meta->title == NULL || strlen(meta->title) == 0) {
 		return;
 	}
+	service_lock();
 	const char *original_xml = get_var(TRANSPORT_VAR_AV_URI_META);
 	char *didl = SongMetaData_to_DIDL(meta, original_xml);
-	service_lock();
 	replace_var(TRANSPORT_VAR_AV_URI_META, didl);
 	replace_var(TRANSPORT_VAR_CUR_TRACK_META, didl);
 	service_unlock();
@@ -571,7 +571,7 @@ static int set_avtransport_uri(struct action_event *event)
 			service_unlock();
 			return -1;
 		}
-		output_set_next_uri("");
+		output_set_next_uri("", "");
 		output_set_uri("", NULL);
 		replace_transport_uri_and_meta("", "");
 		replace_current_uri_and_meta("", "");
@@ -621,7 +621,7 @@ static int set_next_avtransport_uri(struct action_event *event)
 	const char *next_uri_meta = upnp_get_string(event, "NextURIMetaData");
 	if (next_uri_meta == NULL) return -1;
 	service_lock();
-	output_set_next_uri(next_uri);
+	output_set_next_uri(next_uri, next_uri_meta);
 	replace_var(TRANSPORT_VAR_NEXT_AV_URI, next_uri);
 	replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, *next_uri ? next_uri_meta : "");
 	service_unlock();
@@ -799,7 +799,7 @@ static int stop(struct action_event *event)
 	return 0;
 }
 
-static void inform_play_transition_from_output(enum PlayFeedback fb) {
+static void inform_play_transition_from_output(enum PlayFeedback fb, const char *uri, const char *meta) {
 	service_lock();
 	switch (fb) {
 	case PLAY_FAILED:
@@ -815,12 +815,18 @@ static void inform_play_transition_from_output(enum PlayFeedback fb) {
 		break;
 
 	case PLAY_STARTED_NEXT_STREAM: {
-		const char *av_uri = get_var(TRANSPORT_VAR_NEXT_AV_URI);
-		const char *av_meta = get_var(TRANSPORT_VAR_NEXT_AV_URI_META);
-		replace_transport_uri_and_meta(av_uri, av_meta);
-		replace_current_uri_and_meta(av_uri, av_meta);
-		replace_var(TRANSPORT_VAR_NEXT_AV_URI, "");
-		replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, "");
+		if (!uri || transport_state_ == TRANSPORT_STOPPED) break;
+		replace_transport_uri_and_meta(uri, meta ? meta : "");
+		replace_current_uri_and_meta(uri, meta ? meta : "");
+		replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_CUR_MEDIA_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_REL_TIME_POS, kZeroTime);
+		/* Keep a newer queued item if the controller updated NextURI
+		 * between prefetch and actual playback. */
+		if (strcmp(uri, get_var(TRANSPORT_VAR_NEXT_AV_URI)) == 0) {
+			replace_var(TRANSPORT_VAR_NEXT_AV_URI, "");
+			replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, "");
+		}
 		break;
 	}
 	}

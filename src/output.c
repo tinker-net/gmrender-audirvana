@@ -152,9 +152,9 @@ void output_set_uri(const char *uri, output_update_meta_cb_t meta_cb) {
 		output_module->set_uri(uri, meta_cb);
 	}
 }
-void output_set_next_uri(const char *uri) {
+void output_set_next_uri(const char *uri, const char *meta) {
 	if (output_module && output_module->set_next_uri) {
-		output_module->set_next_uri(uri);
+		output_module->set_next_uri(uri, meta);
 	}
 }
 

@@ -140,6 +140,13 @@ static void scan_mime_list(void)
 static GstElement *player_ = NULL;
 static char *gsuri_ = NULL;         // locally strdup()ed
 static char *gs_next_uri_ = NULL;   // locally strdup()ed
+static char *gs_next_meta_ = NULL;
+static char *gs_pending_uri_ = NULL;
+static char *gs_pending_meta_ = NULL;
+static GMutex uri_lock_;
+static gboolean stream_seen_ = FALSE;
+static gboolean pending_started_ = FALSE;
+static guint current_group_id_ = 0;
 static struct SongMetaData song_meta_;
 
 static output_transition_cb_t play_trans_callback_ = NULL;
@@ -163,19 +170,35 @@ static GstState get_current_player_state() {
 	return state;
 }
 
+static void clear_pending_locked(void) {
+	g_clear_pointer(&gs_pending_uri_, g_free);
+	g_clear_pointer(&gs_pending_meta_, g_free);
+	pending_started_ = FALSE;
+}
+
 static int output_gstreamer_play(output_transition_cb_t callback) {
-	if (gsuri_ == NULL) return -1;
+	g_mutex_lock(&uri_lock_);
+	char *uri = g_strdup(gsuri_);
 	play_trans_callback_ = callback;
+	g_mutex_unlock(&uri_lock_);
+	if (!uri) return -1;
 	if (g_atomic_int_get(&uri_changed_) || get_current_player_state() != GST_STATE_PAUSED) {
 		if (gst_element_set_state(player_, GST_STATE_READY) ==
 		    GST_STATE_CHANGE_FAILURE) {
 			Log_error("gstreamer", "setting play state failed (1)");
 			g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+			g_free(uri);
 			return -1;
 		}
-		g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
+		g_mutex_lock(&uri_lock_);
+		clear_pending_locked();
+		stream_seen_ = FALSE;
+		current_group_id_ = 0;
+		g_mutex_unlock(&uri_lock_);
+		g_object_set(G_OBJECT(player_), "uri", uri, NULL);
 		g_atomic_int_set(&uri_changed_, FALSE);
 	}
+	g_free(uri);
 	g_atomic_int_set(&playback_intent_, INTENT_PLAYING);
 	if (gst_element_set_state(player_, GST_STATE_PLAYING) ==
 	    GST_STATE_CHANGE_FAILURE) {
@@ -190,6 +213,10 @@ static int output_gstreamer_play(output_transition_cb_t callback) {
 static int output_gstreamer_stop(void) {
 	g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
 	g_atomic_int_set(&uri_changed_, TRUE);
+	g_mutex_lock(&uri_lock_);
+	clear_pending_locked();
+	stream_seen_ = FALSE;
+	g_mutex_unlock(&uri_lock_);
 	if (gst_element_set_state(player_, GST_STATE_READY) ==
 	    GST_STATE_CHANGE_FAILURE) {
 		return -1;
@@ -218,17 +245,23 @@ static int output_gstreamer_seek(gint64 position_nanos) {
 	}
 }
 
-static void output_gstreamer_set_next_uri(const char *uri) {
+static void output_gstreamer_set_next_uri(const char *uri, const char *meta) {
 	Log_info("gstreamer", "Set next uri to '%s'", uri);
-	free(gs_next_uri_);
-	gs_next_uri_ = (uri && *uri) ? strdup(uri) : NULL;
+	g_mutex_lock(&uri_lock_);
+	g_free(gs_next_uri_); g_free(gs_next_meta_);
+	gs_next_uri_ = (uri && *uri) ? g_strdup(uri) : NULL;
+	gs_next_meta_ = gs_next_uri_ ? g_strdup(meta ? meta : "") : NULL;
+	g_mutex_unlock(&uri_lock_);
 }
 
 static void output_gstreamer_set_uri(const char *uri,
 				     output_update_meta_cb_t meta_cb) {
 	Log_info("gstreamer", "Set uri to '%s'", uri);
-	free(gsuri_);
-	gsuri_ = (uri && *uri) ? strdup(uri) : NULL;
+	g_mutex_lock(&uri_lock_);
+	g_free(gsuri_);
+	gsuri_ = (uri && *uri) ? g_strdup(uri) : NULL;
+	clear_pending_locked();
+	g_mutex_unlock(&uri_lock_);
 	last_known_time_.duration = 0;
 	last_known_time_.position = 0;
 	g_atomic_int_set(&uri_changed_, TRUE);
@@ -236,7 +269,7 @@ static void output_gstreamer_set_uri(const char *uri,
 	SongMetaData_clear(&song_meta_);
 
 	/* A cleared URI must never restart playbin with a NULL resource. */
-	if (gsuri_ == NULL) return;
+	if (!uri || !*uri) return;
 	// If already playing, update the playbin's URI
 	if (g_atomic_int_get(&playback_intent_) == INTENT_PLAYING)
 		output_gstreamer_play(play_trans_callback_);
@@ -351,27 +384,64 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 	msgSrcName = GST_OBJECT_NAME(msgSrc);
 
 	switch (msgType) {
-	case GST_MESSAGE_EOS:
+	case GST_MESSAGE_STREAM_START: {
+		/* about-to-finish is a prefetch signal, not a track boundary.
+		 * Commit the track only when GStreamer reports its new stream. */
+		guint group = 0;
+		gst_message_parse_group_id(msg, &group);
+		char *uri = NULL, *meta = NULL;
+		output_transition_cb_t callback = NULL;
+		g_mutex_lock(&uri_lock_);
+		if (g_atomic_int_get(&playback_intent_) != INTENT_STOPPED &&
+		    (!stream_seen_ || !group || group != current_group_id_)) {
+			if (gs_pending_uri_ && (stream_seen_ || pending_started_)) {
+				g_free(gsuri_);
+				gsuri_ = gs_pending_uri_;
+				gs_pending_uri_ = NULL;
+				uri = g_strdup(gsuri_);
+				meta = gs_pending_meta_;
+				gs_pending_meta_ = NULL;
+				pending_started_ = FALSE;
+				callback = play_trans_callback_;
+			}
+			stream_seen_ = TRUE;
+			current_group_id_ = group;
+		}
+		g_mutex_unlock(&uri_lock_);
+		if (uri && callback) callback(PLAY_STARTED_NEXT_STREAM, uri, meta);
+		g_free(uri); g_free(meta);
+		break;
+	}
+	case GST_MESSAGE_EOS: {
 		Log_info("gstreamer", "%s: End-of-stream", msgSrcName);
 		if (g_atomic_int_get(&playback_intent_) == INTENT_STOPPED) break;
-		if (gs_next_uri_ != NULL) {
-			// If playbin does not support gapless (old
-			// versions didn't), this will trigger.
-			free(gsuri_);
-			gsuri_ = gs_next_uri_;
-			gs_next_uri_ = NULL;
+		/* Late queue entries still play, but require a new preroll. */
+		g_mutex_lock(&uri_lock_);
+		if (!gs_pending_uri_ && gs_next_uri_) {
+			gs_pending_uri_ = gs_next_uri_; gs_next_uri_ = NULL;
+			gs_pending_meta_ = gs_next_meta_; gs_next_meta_ = NULL;
+		}
+		char *next = g_strdup(gs_pending_uri_);
+		pending_started_ = next != NULL;
+		stream_seen_ = FALSE;
+		current_group_id_ = 0;
+		output_transition_cb_t callback = play_trans_callback_;
+		g_mutex_unlock(&uri_lock_);
+		if (next) {
 			gst_element_set_state(player_, GST_STATE_READY);
-			g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
-			gst_element_set_state(player_, GST_STATE_PLAYING);
-			if (play_trans_callback_) {
-				play_trans_callback_(PLAY_STARTED_NEXT_STREAM);
+			g_object_set(player_, "uri", next, NULL);
+			if (gst_element_set_state(player_, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+				g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+				if (callback) callback(PLAY_FAILED, NULL, NULL);
 			}
 		} else {
 			g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
 			g_atomic_int_set(&uri_changed_, TRUE);
-			if (play_trans_callback_) play_trans_callback_(PLAY_STOPPED);
+			if (callback) callback(PLAY_STOPPED, NULL, NULL);
 		}
+		g_free(next);
 		break;
+	}
 
 	case GST_MESSAGE_ERROR: {
 		gchar *debug;
@@ -390,7 +460,12 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 		    g_atomic_int_compare_and_exchange(&playback_intent_, INTENT_PAUSED, INTENT_STOPPED)) {
 			g_atomic_int_set(&uri_changed_, TRUE);
 			gst_element_set_state(player_, GST_STATE_READY);
-			if (play_trans_callback_) play_trans_callback_(PLAY_FAILED);
+			g_mutex_lock(&uri_lock_);
+			clear_pending_locked();
+			stream_seen_ = FALSE;
+			output_transition_cb_t callback = play_trans_callback_;
+			g_mutex_unlock(&uri_lock_);
+			if (callback) callback(PLAY_FAILED, NULL, NULL);
 		}
 		break;
 	}
@@ -574,25 +649,17 @@ static int output_gstreamer_set_mute(int m) {
 }
 
 static void prepare_next_stream(GstElement *obj, gpointer userdata) {
-	(void)obj;
 	(void)userdata;
-
-	Log_info("gstreamer", "about-to-finish cb: setting uri %s",
-		 gs_next_uri_);
-	/* Retain the current URI if the controller has not queued a successor. */
-	if (g_atomic_int_get(&playback_intent_) == INTENT_STOPPED) return;
-	if (gs_next_uri_ != NULL) {
-		free(gsuri_);
-		gsuri_ = gs_next_uri_;
-		gs_next_uri_ = NULL;
-		g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
-		if (play_trans_callback_) {
-			// TODO(hzeller): can we figure out when we _actually_
-			// start playing this ? there are probably a couple
-			// of seconds between now and actual start.
-			play_trans_callback_(PLAY_STARTED_NEXT_STREAM);
-		}
+	g_mutex_lock(&uri_lock_);
+	if (g_atomic_int_get(&playback_intent_) != INTENT_STOPPED &&
+	    gs_next_uri_ && !gs_pending_uri_) {
+		gs_pending_uri_ = gs_next_uri_;
+		gs_pending_meta_ = gs_next_meta_;
+		gs_next_uri_ = NULL; gs_next_meta_ = NULL;
+		Log_info("gstreamer", "Prefetch next URI %s", gs_pending_uri_);
+		g_object_set(obj, "uri", gs_pending_uri_, NULL);
 	}
+	g_mutex_unlock(&uri_lock_);
 }
 
 static void configure_http_source(GstElement *playbin, GstElement *source, gpointer unused) {

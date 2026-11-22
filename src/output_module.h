@@ -34,7 +34,7 @@ struct output_module {
 	// Commands.
 	int (*init)(void);
 	void (*set_uri)(const char *uri, output_update_meta_cb_t meta_info);
-	void (*set_next_uri)(const char *uri);
+	void (*set_next_uri)(const char *uri, const char *meta);
 	int (*play)(output_transition_cb_t transition_callback);
 	int (*stop)(void);
 	int (*pause)(void);
