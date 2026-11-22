@@ -31,6 +31,7 @@
 // output.
 enum PlayFeedback {
 	PLAY_STOPPED,
+	PLAY_FAILED,
 	PLAY_STARTED_NEXT_STREAM,
 };
 typedef void (*output_transition_cb_t)(enum PlayFeedback);

@@ -586,6 +586,7 @@ static int set_avtransport_uri(struct action_event *event)
 		return 0;
 	}
 	// Transport URI/Meta set now, current URI/Meta when it starts playing.
+	replace_var(TRANSPORT_VAR_TRANSPORT_STATUS, "OK");
 	int requires_meta_update = replace_transport_uri_and_meta(uri, meta);
 
 	if (transport_state_ == TRANSPORT_PLAYING) {
@@ -801,6 +802,12 @@ static int stop(struct action_event *event)
 static void inform_play_transition_from_output(enum PlayFeedback fb) {
 	service_lock();
 	switch (fb) {
+	case PLAY_FAILED:
+		if (transport_state_ != TRANSPORT_STOPPED) {
+			replace_var(TRANSPORT_VAR_TRANSPORT_STATUS, "ERROR_OCCURRED");
+			change_transport_state(TRANSPORT_STOPPED);
+		}
+		break;
 	case PLAY_STOPPED:
 		replace_transport_uri_and_meta("", "");
 		replace_current_uri_and_meta("", "");
@@ -844,9 +851,11 @@ static int play(struct action_event *event)
 
 	case TRANSPORT_PAUSED_PLAYBACK:
 		if (output_play(&inform_play_transition_from_output)) {
+			replace_var(TRANSPORT_VAR_TRANSPORT_STATUS, "ERROR_OCCURRED");
 			upnp_set_error(event, 704, "Playing failed");
 			rc = -1;
 		} else {
+			replace_var(TRANSPORT_VAR_TRANSPORT_STATUS, "OK");
 			change_transport_state(TRANSPORT_PLAYING);
 			const char *av_uri = get_var(TRANSPORT_VAR_AV_URI);
 			const char *av_meta = get_var(TRANSPORT_VAR_AV_URI_META);

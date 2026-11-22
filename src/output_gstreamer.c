@@ -370,6 +370,14 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 		g_error_free(err);
 		g_free(debug);
 
+		/* Errors are not EOS. Preserve the transport URI for a controller
+		 * retry, and ignore subsequent EOS from this failed stream. */
+		if (g_atomic_int_compare_and_exchange(&playback_intent_, INTENT_PLAYING, INTENT_STOPPED) ||
+		    g_atomic_int_compare_and_exchange(&playback_intent_, INTENT_PAUSED, INTENT_STOPPED)) {
+			g_atomic_int_set(&uri_changed_, TRUE);
+			gst_element_set_state(player_, GST_STATE_READY);
+			if (play_trans_callback_) play_trans_callback_(PLAY_FAILED);
+		}
 		break;
 	}
 	case GST_MESSAGE_STATE_CHANGED: {
