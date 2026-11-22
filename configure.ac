@@ -52,7 +52,7 @@ AC_ARG_WITH( gstreamer,
 HAVE_GST=no
 if test x$try_gstreamer = xyes; then
   dnl check for GStreamer
-  PKG_CHECK_MODULES(GST, gstreamer-$GST_NEW_MAJORMINOR >= $GST_REQS,
+  PKG_CHECK_MODULES(GST, gstreamer-$GST_NEW_MAJORMINOR >= $GST_REQS gstreamer-base-1.0,
     [
       HAVE_GST=yes
       AC_SUBST(GST_CFLAGS)
@@ -64,16 +64,7 @@ if test x$try_gstreamer = xyes; then
     ])
 
     if test x$HAVE_GST = xno; then
-       # check for an old version.
-       PKG_CHECK_MODULES(GST, gstreamer-$GST_OLD_MAJORMINOR >= $GST_REQS,
-       [
-         HAVE_GST=yes
-         AC_SUBST(GST_CFLAGS)
-         AC_SUBST(GST_LIBS)
-       ],
-       [
-         HAVE_GST=no
-       ])
+       AC_MSG_ERROR([GStreamer 1.x and gstreamer-base-1.0 are required])
     fi
 fi
 if test x$HAVE_GST = xyes; then
