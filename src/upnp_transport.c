@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include <glib.h>
 
@@ -202,12 +203,6 @@ static const char *rec_quality_modi[] = {
 static const char *aat_seekmodi[] = {
 	"ABS_TIME",
 	"REL_TIME",
-	"ABS_COUNT",
-	"REL_COUNT",
-	"TRACK_NR",
-	"CHANNEL_FREQ",
-	"TAPE-INDEX",
-	"FRAME",
 	NULL
 };
 
@@ -694,14 +689,28 @@ static void print_upnp_time(char *result, size_t size, gint64 t) {
 	snprintf(result, size, "%d:%02d:%02d", hour, minute, second);
 }
 
-static gint64 parse_upnp_time(const char *time_string) {
-	int hour = 0;
-	int minute = 0;
-	int second = 0;
-	sscanf(time_string, "%d:%02d:%02d", &hour, &minute, &second);
-	const gint64 seconds = (hour * 3600 + minute * 60 + second);
-	const gint64 one_sec_unit = 1000000000LL;
-	return one_sec_unit * seconds;
+static gboolean parse_upnp_time(const char *value, gint64 *time) {
+	if (!value) return FALSE;
+	guint64 hours = 0;
+	int minutes = 0, seconds = 0, used = 0;
+	if (sscanf(value, "%" G_GUINT64_FORMAT ":%2d:%2d%n", &hours, &minutes, &seconds, &used) != 3 ||
+	    used == 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59 ||
+	    hours > (G_MAXINT64 / G_GINT64_CONSTANT(1000000000) - 3599) / 3600 ||
+	    value[0] == '-') return FALSE;
+	gint64 nanos = (gint64)(hours * 3600 + minutes * 60 + seconds) * G_GINT64_CONSTANT(1000000000);
+	if (value[used] == '.') {
+		int digits = 0;
+		gint64 scale = 100000000;
+		while (value[++used] >= '0' && value[used] <= '9') {
+			if (++digits > 9) return FALSE;
+			nanos += (value[used] - '0') * scale;
+			scale /= 10;
+		}
+		if (!digits) return FALSE;
+	}
+	if (value[used] != '\0') return FALSE;
+	*time = nanos;
+	return TRUE;
 }
 
 // We constantly update the track time to event about it to our clients.
@@ -782,7 +791,10 @@ static int stop(struct action_event *event)
 	case TRANSPORT_PAUSED_RECORDING:
 	case TRANSPORT_RECORDING:
 	case TRANSPORT_PAUSED_PLAYBACK:
-		output_stop();
+		if (output_stop() != 0) {
+			upnp_set_error(event, UPNP_TRANSPORT_E_READ_ERROR, "Stop failed");
+			break;
+		}
 		change_transport_state(TRANSPORT_STOPPED);
 		break;
 
@@ -809,8 +821,14 @@ static void inform_play_transition_from_output(enum PlayFeedback fb, const char 
 		}
 		break;
 	case PLAY_STOPPED:
+		if (transport_state_ == TRANSPORT_STOPPED) break;
 		replace_transport_uri_and_meta("", "");
 		replace_current_uri_and_meta("", "");
+		replace_var(TRANSPORT_VAR_NEXT_AV_URI, "");
+		replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, "");
+		replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_CUR_MEDIA_DUR, kZeroTime);
+		replace_var(TRANSPORT_VAR_REL_TIME_POS, kZeroTime);
 		change_transport_state(TRANSPORT_STOPPED);
 		break;
 
@@ -919,28 +937,28 @@ static int pause_stream(struct action_event *event)
 	return rc;
 }
 
-static int seek(struct action_event *event)
-{
-	if (!has_instance_id(event)) {
+static int seek(struct action_event *event) {
+	if (!has_instance_id(event)) return -1;
+	const char *unit = upnp_get_string(event, "Unit");
+	const char *target = upnp_get_string(event, "Target");
+	if (!unit || !target) return -1;
+	if (strcmp(unit, "REL_TIME") && strcmp(unit, "ABS_TIME")) {
+		upnp_set_error(event, UPNP_TRANSPORT_E_SEEKMODE_NS, "Unsupported seek mode");
 		return -1;
 	}
-
-	const char *unit = upnp_get_string(event, "Unit");
-	if (strcmp(unit, "REL_TIME") == 0) {
-		// This is the only thing we support right now.
-		const char *target = upnp_get_string(event, "Target");
-		gint64 nanos = parse_upnp_time(target);
-		service_lock();
-		if (output_seek(nanos) == 0) {
-			// TODO(hzeller): Seeking might take some time,
-			// pretend to already be there. Should we go into
-			// TRANSITION mode ?
-			// (gstreamer will go into PAUSE, then PLAYING)
-			replace_var(TRANSPORT_VAR_REL_TIME_POS, target);
-		}
-		service_unlock();
+	gint64 nanos;
+	if (!parse_upnp_time(target,&nanos)) {
+		upnp_set_error(event, UPNP_TRANSPORT_E_ILL_SEEKTARGET, "Invalid seek time");
+		return -1;
 	}
-
+	service_lock();
+	if (output_seek(nanos) != 0) {
+		upnp_set_error(event, UPNP_TRANSPORT_E_ILL_SEEKTARGET, "Seek unavailable");
+		service_unlock();
+		return -1;
+	}
+	replace_var(TRANSPORT_VAR_REL_TIME_POS, target);
+	service_unlock();
 	return 0;
 }
 
