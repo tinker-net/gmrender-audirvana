@@ -145,6 +145,7 @@ static GstState get_current_player_state() {
 }
 
 static int output_gstreamer_play(output_transition_cb_t callback) {
+	if (gsuri_ == NULL) return -1;
 	play_trans_callback_ = callback;
 	if (get_current_player_state() != GST_STATE_PAUSED) {
 		if (gst_element_set_state(player_, GST_STATE_READY) ==
@@ -200,9 +201,13 @@ static void output_gstreamer_set_uri(const char *uri,
 	Log_info("gstreamer", "Set uri to '%s'", uri);
 	free(gsuri_);
 	gsuri_ = (uri && *uri) ? strdup(uri) : NULL;
+	last_known_time_.duration = 0;
+	last_known_time_.position = 0;
 	meta_update_callback_ = meta_cb;
 	SongMetaData_clear(&song_meta_);
 
+	/* A cleared URI must never restart playbin with a NULL resource. */
+	if (gsuri_ == NULL) return;
 	// If already playing, update the playbin's URI
 	if (get_current_player_state() == GST_STATE_PLAYING)
 		output_gstreamer_play(play_trans_callback_);
@@ -521,10 +526,11 @@ static void prepare_next_stream(GstElement *obj, gpointer userdata) {
 
 	Log_info("gstreamer", "about-to-finish cb: setting uri %s",
 		 gs_next_uri_);
-	free(gsuri_);
-	gsuri_ = gs_next_uri_;
-	gs_next_uri_ = NULL;
-	if (gsuri_ != NULL) {
+	/* Retain the current URI if the controller has not queued a successor. */
+	if (gs_next_uri_ != NULL) {
+		free(gsuri_);
+		gsuri_ = gs_next_uri_;
+		gs_next_uri_ = NULL;
 		g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
 		if (play_trans_callback_) {
 			// TODO(hzeller): can we figure out when we _actually_
