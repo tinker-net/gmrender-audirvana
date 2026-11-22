@@ -44,3 +44,4 @@ jobs:
             sleep 1
           done
           NO_PROXY="$address" no_proxy="$address" python3 tests/upnp_smoke.py "$base" --test-instance
+          NO_PROXY="$address,127.0.0.1" no_proxy="$address,127.0.0.1" python3 tests/http_pcm_smoke.py "$base" --test-instance
