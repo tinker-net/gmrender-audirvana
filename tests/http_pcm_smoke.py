@@ -43,10 +43,10 @@ def run(renderer):
             wav.setframerate(44100)
             wav.writeframes(bytes(44100 * 4 * 3))
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
-        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as http:
-            thread = threading.Thread(target=http.serve_forever, daemon=True)
+        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            base = f"http://127.0.0.1:{http.server_port}"
+            base = f"http://127.0.0.1:{server.server_port}"
             try:
                 set_uri(renderer, base + "/missing.wav")
                 play(renderer)
@@ -62,7 +62,7 @@ def run(renderer):
             finally:
                 renderer.call(AVT, "Stop", INSTANCE)
                 set_uri(renderer, "")
-                http.shutdown()
+                server.shutdown()
                 thread.join(timeout=5)
 
 
