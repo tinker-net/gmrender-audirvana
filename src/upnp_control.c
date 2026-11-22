@@ -568,9 +568,10 @@ static int get_mute(struct action_event *event)
 	return cmd_obtain_variable(event, CONTROL_VAR_MUTE, "CurrentMute");
 }
 
-static void set_mute_toggle(int do_mute) {
+static int set_mute_toggle(int do_mute) {
+	if (output_set_mute(do_mute)) return -1;
 	replace_var(CONTROL_VAR_MUTE, do_mute ? "1" : "0");
-	output_set_mute(do_mute);
+	return 0;
 }
 
 static int set_mute(struct action_event *event) {
@@ -587,9 +588,10 @@ static int set_mute(struct action_event *event) {
 		return -1;
 	}
 	service_lock();
-	set_mute_toggle(do_mute);
+	int rc = set_mute_toggle(do_mute);
 	service_unlock();
-	return 0;
+	if (rc) upnp_set_error(event, 601, "Mute unavailable in fixed-volume mode");
+	return rc;
 }
 
 static int get_volume(struct action_event *event)
@@ -654,9 +656,13 @@ static int set_volume_db(struct action_event *event) {
 	if (units > volume_db_range.max) units = volume_db_range.max;
 	/* RenderingControl VolumeDB uses signed units of 1/256 dB. */
 	service_lock();
-	float decibel = change_volume_decibel(units / 256.0f);
-
-	output_set_volume(exp(decibel / 20 * log(10)));
+	float decibel = volume_level_to_decibel(volume_decibel_to_level(units / 256.0f));
+	if (output_set_volume(exp(decibel / 20 * log(10)))) {
+		service_unlock();
+		upnp_set_error(event, 601, "Volume unavailable in fixed-volume mode");
+		return -1;
+	}
+	change_volume_decibel(decibel);
 	service_unlock();
 
 	return 0;
@@ -679,8 +685,12 @@ static int set_volume(struct action_event *event) {
 
 	const double fraction = exp(decibel / 20 * log(10));
 
+	if (output_set_volume(fraction)) {
+		service_unlock();
+		upnp_set_error(event, 601, "Volume unavailable in fixed-volume mode");
+		return -1;
+	}
 	change_volume(volume, db_volume);
-	output_set_volume(fraction);
 	set_mute_toggle(volume_level == 0);
 	service_unlock();
 
