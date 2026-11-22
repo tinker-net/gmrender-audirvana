@@ -137,6 +137,11 @@ struct track_time_info {
 };
 static struct track_time_info last_known_time_ = {0, 0};
 
+/* Separate user intent from temporary GStreamer buffering states. */
+enum PlaybackIntent { INTENT_STOPPED, INTENT_PLAYING, INTENT_PAUSED };
+static gint playback_intent_ = INTENT_STOPPED;
+static gint uri_changed_ = TRUE;
+
 static GstState get_current_player_state() {
 	GstState state = GST_STATE_PLAYING;
 	GstState pending = GST_STATE_NULL;
@@ -147,23 +152,30 @@ static GstState get_current_player_state() {
 static int output_gstreamer_play(output_transition_cb_t callback) {
 	if (gsuri_ == NULL) return -1;
 	play_trans_callback_ = callback;
-	if (get_current_player_state() != GST_STATE_PAUSED) {
+	if (g_atomic_int_get(&uri_changed_) || get_current_player_state() != GST_STATE_PAUSED) {
 		if (gst_element_set_state(player_, GST_STATE_READY) ==
 		    GST_STATE_CHANGE_FAILURE) {
 			Log_error("gstreamer", "setting play state failed (1)");
-			// Error, but continue; can't get worse :)
+			g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+			return -1;
 		}
 		g_object_set(G_OBJECT(player_), "uri", gsuri_, NULL);
+		g_atomic_int_set(&uri_changed_, FALSE);
 	}
+	g_atomic_int_set(&playback_intent_, INTENT_PLAYING);
 	if (gst_element_set_state(player_, GST_STATE_PLAYING) ==
 	    GST_STATE_CHANGE_FAILURE) {
 		Log_error("gstreamer", "setting play state failed (2)");
+		g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+		g_atomic_int_set(&uri_changed_, TRUE);
 		return -1;
 	}
 	return 0;
 }
 
 static int output_gstreamer_stop(void) {
+	g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+	g_atomic_int_set(&uri_changed_, TRUE);
 	if (gst_element_set_state(player_, GST_STATE_READY) ==
 	    GST_STATE_CHANGE_FAILURE) {
 		return -1;
@@ -173,8 +185,10 @@ static int output_gstreamer_stop(void) {
 }
 
 static int output_gstreamer_pause(void) {
+	g_atomic_int_set(&playback_intent_, INTENT_PAUSED);
 	if (gst_element_set_state(player_, GST_STATE_PAUSED) ==
 	    GST_STATE_CHANGE_FAILURE) {
+		g_atomic_int_set(&playback_intent_, INTENT_PLAYING);
 		return -1;
 	} else {
 		return 0;
@@ -203,13 +217,14 @@ static void output_gstreamer_set_uri(const char *uri,
 	gsuri_ = (uri && *uri) ? strdup(uri) : NULL;
 	last_known_time_.duration = 0;
 	last_known_time_.position = 0;
+	g_atomic_int_set(&uri_changed_, TRUE);
 	meta_update_callback_ = meta_cb;
 	SongMetaData_clear(&song_meta_);
 
 	/* A cleared URI must never restart playbin with a NULL resource. */
 	if (gsuri_ == NULL) return;
 	// If already playing, update the playbin's URI
-	if (get_current_player_state() == GST_STATE_PLAYING)
+	if (g_atomic_int_get(&playback_intent_) == INTENT_PLAYING)
 		output_gstreamer_play(play_trans_callback_);
 }
 
@@ -324,6 +339,7 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 	switch (msgType) {
 	case GST_MESSAGE_EOS:
 		Log_info("gstreamer", "%s: End-of-stream", msgSrcName);
+		if (g_atomic_int_get(&playback_intent_) == INTENT_STOPPED) break;
 		if (gs_next_uri_ != NULL) {
 			// If playbin does not support gapless (old
 			// versions didn't), this will trigger.
@@ -336,8 +352,10 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 			if (play_trans_callback_) {
 				play_trans_callback_(PLAY_STARTED_NEXT_STREAM);
 			}
-		} else if (play_trans_callback_) {
-			play_trans_callback_(PLAY_STOPPED);
+		} else {
+			g_atomic_int_set(&playback_intent_, INTENT_STOPPED);
+			g_atomic_int_set(&uri_changed_, TRUE);
+			if (play_trans_callback_) play_trans_callback_(PLAY_STOPPED);
 		}
 		break;
 
@@ -391,6 +409,7 @@ static gboolean my_bus_callback(GstBus * bus, GstMessage * msg,
 	case GST_MESSAGE_BUFFERING:
         {
                 if (buffer_duration <= 0.0) break;  /* nothing to buffer */
+                if (g_atomic_int_get(&playback_intent_) != INTENT_PLAYING) break;
 
                 gint percent = 0;
                 gst_message_parse_buffering (msg, &percent);
@@ -527,6 +546,7 @@ static void prepare_next_stream(GstElement *obj, gpointer userdata) {
 	Log_info("gstreamer", "about-to-finish cb: setting uri %s",
 		 gs_next_uri_);
 	/* Retain the current URI if the controller has not queued a successor. */
+	if (g_atomic_int_get(&playback_intent_) == INTENT_STOPPED) return;
 	if (gs_next_uri_ != NULL) {
 		free(gsuri_);
 		gsuri_ = gs_next_uri_;
@@ -598,6 +618,7 @@ static int output_gstreamer_init(void)
 		if (sink == NULL) {
 		  Log_error("gstreamer", "Couldn't create sink '%s'",
 			    audio_sink);
+		  return 1; /* Never silently fall back to a different output. */
 		} else {
 		  if (audio_device != NULL) {
 		    g_object_set (G_OBJECT(sink), "device", audio_device, NULL);
@@ -611,7 +632,8 @@ static int output_gstreamer_init(void)
 		sink = gst_parse_bin_from_description(audio_pipe, TRUE, NULL);
 
 		if (sink == NULL) {
-			Log_error("gstreamer", "Could not create pipeline.");
+			Log_error("gstreamer", "Could not create audio pipeline.");
+			return 1;
 		} else {
 			g_object_set (G_OBJECT (player_), "audio-sink", sink, NULL);
 		}
@@ -637,6 +659,7 @@ static int output_gstreamer_init(void)
 	if (gst_element_set_state(player_, GST_STATE_READY) ==
 	    GST_STATE_CHANGE_FAILURE) {
 		Log_error("gstreamer", "Error: pipeline doesn't become ready.");
+		return 1;
 	}
 
 	g_signal_connect(G_OBJECT(player_), "about-to-finish",
