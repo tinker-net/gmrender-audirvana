@@ -1,98 +1,93 @@
-# Raspberry Pi preview (Debian / DietPi)
+# Raspberry Pi / DietPi — preview 0.2
 
-This is an interoperability preview, not a finished release. It retains the original
-GStreamer renderer and does not use MPD or OpenHome.
+A headless UPnP/AV renderer for Audirvana. One gmediarender process; no MPD
+and no OpenHome. This preview includes native DFF/DSD and DoP, clocked PCM
+track transitions, HTTP error reporting and bounded source retries.
+It is still an interoperability test build, not a certified final release.
 
-## Installation
+## Install everything together
 
-Run as your normal login user. The installation uses /opt/gmrender-audirvana,
-not /usr/bin or /usr/local/bin, and does not overwrite the packaged service.
+Native DSD and DoP require GStreamer 1.24 or later (Debian Trixie recommended).
+The installer builds the renderer and the pinned LGPL DFF parser, installs
+them under /opt/gmrender-audirvana and creates a separate systemd service
+running as an unprivileged audio user. It does not replace the distribution's
+gmediarender or stop it. It does not enable the new service at boot.
 
 ```sh
-sudo apt update
-sudo apt install -y git build-essential autoconf automake libtool pkg-config \
-  libglib2.0-dev libupnp-dev libgstreamer1.0-dev \
-  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-alsa gstreamer1.0-tools
-git clone --branch audirvana-compat https://github.com/tinker-net/gmrender-audirvana.git
+sudo apt-get install -y git
+git clone --branch preview-0.2 https://github.com/tinker-net/gmrender-audirvana.git
 cd gmrender-audirvana
-./autogen.sh
-./configure --prefix=/opt/gmrender-audirvana CPPFLAGS=-DENABLE_ACTION_LOGGING
-make -j2
-sudo make install
-/opt/gmrender-audirvana/bin/gmediarender --version
-```
-
-Install the optional bad/ugly/libav GStreamer plugins later if needed for
-additional input formats. They are not required for the initial WAV/PCM tests.
-Action logging is compiled in for this preview to diagnose actual Audirvana SOAP
-requests and responses. Logs may contain private stream URLs; redact
-credentials or signed query parameters before sharing.
-
-## Start a reversible test
-
-Use the same network and DAC as the existing renderer. Stop playback in
-Audirvana and close its current audio zone before switching.
-
-```sh
-aplay -l
-mkdir -p "$HOME/.config/gmrender-audirvana"
-test -s "$HOME/.config/gmrender-audirvana/uuid" || \
-  cat /proc/sys/kernel/random/uuid > "$HOME/.config/gmrender-audirvana/uuid"
+sh scripts/install-pi.sh hw:CARD=D10s,DEV=0 native
 sudo systemctl stop gmediarender
-sudo systemd-run --unit=gmrender-audirvana-preview --property=User="$(id -un)" \
-  --property=SupplementaryGroups=audio --property=NoNewPrivileges=yes \
-  /opt/gmrender-audirvana/bin/gmediarender \
-  --friendly-name="gmrender-audirvana" \
-  --uuid="$(cat "$HOME/.config/gmrender-audirvana/uuid")" --port=49500 \
-  --gstout-audiosink=alsasink --gstout-audiodevice=hw:CARD=D10s,DEV=0 \
-  --gstout-initial-volume-db=0 --logfile=stdout
+sudo systemctl start gmrender-audirvana
+sudo journalctl -u gmrender-audirvana -f
 ```
 
-Replace the ALSA device with the actual card name for other DACs. If another
-renderer is using the DAC, stop its playback as well. Do not enable the new
-service permanently yet. In Audirvana, select the separately named
-`gmrender-audirvana` zone. Start with PCM, at a safe external amplifier volume.
-Use 100% digital volume for the unity-gain test. Do not test DSD or DoP until
-that path is specifically verified.
+For a different device, run `aplay -l` and use its card name. The default
+configuration is intended for the Topping D10s. The installed renderer is
+named gmrender-audirvana and uses a persistent UUID and port 49500.
 
-## Logs and verification
+## Switching DSD output
 
-```sh
-sudo journalctl -u gmrender-audirvana-preview -f
-```
+Edit `sudo nano /etc/default/gmrender-audirvana`. The supported values are:
 
-In another terminal, while playing:
+- GM_DSD_MODE=native — DFF to native ALSA DSD. No PCM conversion.
+- GM_DSD_MODE=dop — DFF to correctly framed DoP PCM carrier.
+- GM_DSD_MODE=off — PCM-only advertisement.
+
+Use `sudo systemctl restart gmrender-audirvana` after a change. Retain the
+same UUID. Only use DoP with a DAC known to support DoP at the requested
+rate; carrier detection is a property of hardware, not ALSA PCM caps.
+Start with low external amplifier volume. This preview intentionally fixes
+digital volume to unity and does not digitally mute or attenuate DSD or DoP.
+Use the DAC/amplifier volume, not Audirvana's software volume. The strict
+native PCM path will reject formats that the DAC cannot accept directly.
+The optional DFF parser is installed at a pinned commit and lives under
+the preview's private plugin directory, not in the system GStreamer registry.
+
+## Verification with Audirvana
+
+Select the gmrender-audirvana zone. In the device information, check for
+`http-get:*:audio/dff:*` and WAV support. Keep software volume at 100%.
+Try a PCM album, DSD64 and DSD128, then higher DSD rates only if your DAC
+supports them. Test both native and Universal Gapless settings. Verify
+position, metadata, pause, seek, next track, natural end, and history.
+
+While playing, collect actual ALSA format and rate:
 
 ```sh
 cat /proc/asound/card*/pcm*p/sub*/hw_params
-sudo journalctl -u gmrender-audirvana-preview -b --no-pager > "$HOME/gmrender-audirvana.log"
 ```
 
-Record the Audirvana version, GStreamer version, whether Universal Gapless was
-enabled, track format, and approximate time of any fault. Test a PCM album
-first with the existing Audirvana settings; then change only Universal Gapless
-for the second run. Try pause/resume, seek, skip, stop and a natural album end.
-
-## Return to the original renderer
+Native DSD must show a DSD_U* format (e.g. DSD_U32_BE); for DoP it must
+show a PCM carrier at the appropriate rate (DSD64 -> 176400 Hz), and the
+DAC should indicate DSD. PCM frequency and sample representation must
+match the requested source; no software resampler is inserted in fixed mode.
 
 ```sh
-sudo systemctl stop gmrender-audirvana-preview
+sudo journalctl -u gmrender-audirvana -b --no-pager > ~/gmrender-audirvana.log
+```
+
+The preview is compiled with SOAP action logging. Logs may contain URLs with
+credentials or signed query parameters, so redact them before sharing.
+
+## Rollback
+
+```sh
+sudo systemctl stop gmrender-audirvana
 sudo systemctl start gmediarender
 ```
 
-The original service file, binary and configuration remain unchanged.
-The preview does not start automatically at boot.
+## Test scope and limitations
 
-## Known limitations
-
-- The automated tests exercise UPnP/SOAP on a fake audio sink, not a real DAC
-  or Audirvana.
-- Robust native gapless transitions, transparent HTTP resume, native DSD,
-  DoP, and verified bit-perfect playback are still work in progress.
-- For DSD, Audirvana requires a renderer to announce audio/dff explicitly.
-  Do not force that MIME type until a DFF-to-native-DSD output path has
-  been validated. GStreamer 1.24+ has native DSD infrastructure but this
-  alone does not guarantee that the installed DFF parser and playback
-  pipeline preserve DSD samples.
-- Test files and debug logs are not required at runtime.
+CI uses simulated sinks, deterministic synthetic DFF and PCM files, and
+SOAP/HTTP regression tests. It does not have a physical USB DAC or a copy
+of Audirvana. Relevant remaining validation includes negotiation on actual DACs,
+DSD gapless, Universal Gapless streaming, and HTTP interruptions that cannot be
+resumed with a byte range. The renderer does not falsely claim successful
+software gain changes in fixed mode. Hardware mixer integration is not part
+of this preview. Only stereo uncompressed DFF is explicitly announced; DST
+and DSF as a direct UPnP input are not asserted. Unaligned DSD words are
+rejected rather than silently truncating samples. The parser is a separate
+LGPL plugin from dv1/gst-dsd-media-parsers; its source and license are
+available at https://github.com/dv1/gst-dsd-media-parsers/tree/896c795abe568c0549d7e42fdae2876f96cef3d7.
