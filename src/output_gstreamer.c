@@ -819,14 +819,21 @@ static int output_gstreamer_init(void)
 	if (native || dop) {
 		GstElement *sink = NULL;
 		g_object_get(player_, "audio-sink", &sink, NULL);
-		GstPad *pad = sink ? gst_element_get_static_pad(sink, "sink") : NULL;
+		/* Open the real ALSA device before querying its caps; a closed
+		 * alsasink only reports the broad pad template. */
+		gboolean ready = sink && gst_element_set_state(sink, GST_STATE_READY) != GST_STATE_CHANGE_FAILURE;
+		if (ready) ready = gst_element_get_state(sink, NULL, NULL, 3 * GST_SECOND) == GST_STATE_CHANGE_SUCCESS;
+		GstPad *pad = ready ? gst_element_get_static_pad(sink, "sink") : NULL;
 		GstCaps *test = gst_caps_from_string("audio/x-dsd,format=DSDU8,layout=interleaved,reversed-bytes=false,rate=352800,channels=2");
 		GstCaps *caps = pad ? gst_pad_query_caps(pad, test) : NULL;
 		gboolean capable = caps && !gst_caps_is_empty(caps);
 		if (caps) gst_caps_unref(caps);
 		gst_caps_unref(test);
 		if (pad) gst_object_unref(pad);
-		if (sink) gst_object_unref(sink);
+		if (sink) {
+			gst_element_set_state(sink, GST_STATE_NULL);
+			gst_object_unref(sink);
+		}
 		if (!capable) { Log_error("gstreamer", "Selected output does not advertise DSD64 path"); return 1; }
 		register_mime_type("audio/dff");
 		register_mime_type("audio/x-dff");
