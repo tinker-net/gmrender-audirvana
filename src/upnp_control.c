@@ -31,6 +31,7 @@
 #  define _GNU_SOURCE         /* See feature_test_macros(7) */
 #endif
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -112,8 +113,7 @@ static const char *aat_presetnames[] =
 static const char *aat_channels[] =
 {
 	"Master",
-	"LF",
-	"RF",
+	// Only Master is implemented by the output module.
 	//"CF",
 	//"LFE",
 	//"LS",
@@ -531,9 +531,40 @@ static int get_vertical_keystone(struct action_event *event)
 				   "CurrentVerticalKeystone");
 }
 
+static int validate_audio_channel(struct action_event *event) {
+	const char *instance = upnp_get_string(event, "InstanceID");
+	if (instance == NULL) return -1;
+	if (strcmp(instance, "0") != 0) {
+		upnp_set_error(event, 702, "Invalid InstanceID");
+		return -1;
+	}
+	const char *channel = upnp_get_string(event, "Channel");
+	if (channel == NULL) return -1;
+	if (strcmp(channel, "Master") != 0) {
+		upnp_set_error(event, UPNP_SOAP_E_INVALID_ARGS, "Unsupported Channel");
+		return -1;
+	}
+	return 0;
+}
+
+static int read_integer_argument(struct action_event *event, const char *name,
+                                 long *result) {
+	const char *value = upnp_get_string(event, name);
+	if (value == NULL) return -1;
+	char *end;
+	errno = 0;
+	long number = strtol(value, &end, 10);
+	if (errno == ERANGE || end == value || *end != '\0') {
+		upnp_set_error(event, UPNP_SOAP_E_INVALID_ARGS, "Invalid %s", name);
+		return -1;
+	}
+	*result = number;
+	return 0;
+}
+
 static int get_mute(struct action_event *event)
 {
-	/* FIXME - Channel */
+	if (validate_audio_channel(event)) return -1;
 	return cmd_obtain_variable(event, CONTROL_VAR_MUTE, "CurrentMute");
 }
 
@@ -543,18 +574,27 @@ static void set_mute_toggle(int do_mute) {
 }
 
 static int set_mute(struct action_event *event) {
+	if (validate_audio_channel(event)) return -1;
 	const char *value = upnp_get_string(event, "DesiredMute");
+	if (value == NULL) return -1;
+	int do_mute;
+	if (!strcmp(value, "1") || !strcmp(value, "true") || !strcmp(value, "yes"))
+		do_mute = 1;
+	else if (!strcmp(value, "0") || !strcmp(value, "false") || !strcmp(value, "no"))
+		do_mute = 0;
+	else {
+		upnp_set_error(event, UPNP_SOAP_E_INVALID_ARGS, "Invalid DesiredMute");
+		return -1;
+	}
 	service_lock();
-	const int do_mute = atoi(value);
 	set_mute_toggle(do_mute);
-	replace_var(CONTROL_VAR_MUTE, do_mute ? "1" : "0");
 	service_unlock();
 	return 0;
 }
 
 static int get_volume(struct action_event *event)
 {
-	/* FIXME - Channel */
+	if (validate_audio_channel(event)) return -1;
 	return cmd_obtain_variable(event, CONTROL_VAR_VOLUME,
 				   "CurrentVolume");
 }
@@ -607,10 +647,14 @@ static float change_volume_decibel(float raw_decibel) {
 }
 
 static int set_volume_db(struct action_event *event) {
-	const char *str_decibel_in = upnp_get_string(event, "DesiredVolume");
+	if (validate_audio_channel(event)) return -1;
+	long units;
+	if (read_integer_argument(event, "DesiredVolume", &units)) return -1;
+	if (units < volume_db_range.min) units = volume_db_range.min;
+	if (units > volume_db_range.max) units = volume_db_range.max;
+	/* RenderingControl VolumeDB uses signed units of 1/256 dB. */
 	service_lock();
-	float raw_decibel_in = atof(str_decibel_in);
-	float decibel = change_volume_decibel(raw_decibel_in);
+	float decibel = change_volume_decibel(units / 256.0f);
 
 	output_set_volume(exp(decibel / 20 * log(10)));
 	service_unlock();
@@ -619,11 +663,15 @@ static int set_volume_db(struct action_event *event) {
 }
 
 static int set_volume(struct action_event *event) {
-	const char *volume = upnp_get_string(event, "DesiredVolume");
+	if (validate_audio_channel(event)) return -1;
+	long requested;
+	if (read_integer_argument(event, "DesiredVolume", &requested)) return -1;
+	if (requested < volume_range.min) requested = volume_range.min;
+	if (requested > volume_range.max) requested = volume_range.max;
+	int volume_level = (int)requested;
+	char volume[16];
+	snprintf(volume, sizeof(volume), "%d", volume_level);
 	service_lock();
-	int volume_level = atoi(volume);  // range 0..100
-	if (volume_level < volume_range.min) volume_level = volume_range.min;
-	if (volume_level > volume_range.max) volume_level = volume_range.max;
 	const float decibel = volume_level_to_decibel(volume_level);
 
 	char db_volume[10];
@@ -641,13 +689,14 @@ static int set_volume(struct action_event *event) {
 
 static int get_volume_db(struct action_event *event)
 {
-	/* FIXME - Channel */
+	if (validate_audio_channel(event)) return -1;
+	/* The SCPD and RenderingControl specification both name this output CurrentVolume. */
 	return cmd_obtain_variable(event, CONTROL_VAR_VOLUME_DB,
-				   "CurrentVolumeDB");
+				   "CurrentVolume");
 }
 
 static int get_volume_dbrange(struct action_event *event) {
-	// Ignoring instanceID and Channel
+	if (validate_audio_channel(event)) return -1;
 	char minval[16];
 	snprintf(minval, sizeof(minval), "%lld", volume_db_range.min);
 	upnp_add_response(event, "MinValue", minval);
