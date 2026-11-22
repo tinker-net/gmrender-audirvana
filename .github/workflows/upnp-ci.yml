@@ -44,7 +44,7 @@ jobs:
           iface=$(ip -4 route show default | awk 'NR==1 {print $5}')
           address=$(ip -4 -o addr show dev "$iface" scope global | awk 'NR==1 {split($4, a, "/"); print a[1]}')
           test -n "$address"
-          ./src/gmediarender --interface-name="$iface" --port=49494 --friendly-name="CI-test-renderer" --uuid=00000000-0000-4000-8000-000000000001 --gstout-audiosink=fakesink --logfile=stdout > renderer.log 2>&1 &
+          ./src/gmediarender --interface-name="$iface" --port=49494 --friendly-name="CI-test-renderer" --uuid=00000000-0000-4000-8000-000000000001 --gstout-audiopipe="fakesink sync=true" --logfile=stdout > renderer.log 2>&1 &
           pid=$!
           trap 'kill "$pid" 2>/dev/null || true; cat renderer.log' EXIT
           base="http://$address:49494"
@@ -57,3 +57,4 @@ jobs:
           done
           NO_PROXY="$address" no_proxy="$address" python3 tests/upnp_smoke.py "$base" --test-instance
           NO_PROXY="$address,127.0.0.1" no_proxy="$address,127.0.0.1" python3 tests/http_pcm_smoke.py "$base" --test-instance
+          NO_PROXY="$address,127.0.0.1" no_proxy="$address,127.0.0.1" python3 tests/gapless_smoke.py "$base" --test-instance
