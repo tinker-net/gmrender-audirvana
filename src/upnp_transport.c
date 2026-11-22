@@ -439,20 +439,18 @@ static int get_media_info(struct action_event *event)
 		return -1;
 	}
 
-	upnp_append_variable(event, TRANSPORT_VAR_NR_TRACKS, "NrTracks");
-	upnp_append_variable(event, TRANSPORT_VAR_CUR_MEDIA_DUR,
-			     "MediaDuration");
-	upnp_append_variable(event, TRANSPORT_VAR_AV_URI, "CurrentURI");
-	upnp_append_variable(event, TRANSPORT_VAR_AV_URI_META,
-			     "CurrentURIMetaData");
-	upnp_append_variable(event, TRANSPORT_VAR_NEXT_AV_URI, "NextURI");
-	upnp_append_variable(event, TRANSPORT_VAR_NEXT_AV_URI_META,
-			     "NextURIMetaData");
-	upnp_append_variable(event, TRANSPORT_VAR_PLAY_MEDIUM, "PlayMedium");
-	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIUM, "RecordMedium");
-	upnp_append_variable(event, TRANSPORT_VAR_REC_MEDIUM_WR_STATUS,
-			     "WriteStatus");
-	return 0;
+	pthread_mutex_lock(&transport_mutex);
+	upnp_add_response(event, "NrTracks", VariableContainer_get(state_variables_, TRANSPORT_VAR_NR_TRACKS, NULL));
+	upnp_add_response(event, "MediaDuration", VariableContainer_get(state_variables_, TRANSPORT_VAR_CUR_MEDIA_DUR, NULL));
+	upnp_add_response(event, "CurrentURI", VariableContainer_get(state_variables_, TRANSPORT_VAR_AV_URI, NULL));
+	upnp_add_response(event, "CurrentURIMetaData", VariableContainer_get(state_variables_, TRANSPORT_VAR_AV_URI_META, NULL));
+	upnp_add_response(event, "NextURI", VariableContainer_get(state_variables_, TRANSPORT_VAR_NEXT_AV_URI, NULL));
+	upnp_add_response(event, "NextURIMetaData", VariableContainer_get(state_variables_, TRANSPORT_VAR_NEXT_AV_URI_META, NULL));
+	upnp_add_response(event, "PlayMedium", VariableContainer_get(state_variables_, TRANSPORT_VAR_PLAY_MEDIUM, NULL));
+	upnp_add_response(event, "RecordMedium", VariableContainer_get(state_variables_, TRANSPORT_VAR_REC_MEDIUM, NULL));
+	upnp_add_response(event, "WriteStatus", VariableContainer_get(state_variables_, TRANSPORT_VAR_REC_MEDIUM_WR_STATUS, NULL));
+	pthread_mutex_unlock(&transport_mutex);
+	return event->status;
 }
 
 // Replace given variable without sending an state-change event.
@@ -629,13 +627,12 @@ static int get_transport_info(struct action_event *event)
 		return -1;
 	}
 
-	upnp_append_variable(event, TRANSPORT_VAR_TRANSPORT_STATE,
-			     "CurrentTransportState");
-	upnp_append_variable(event, TRANSPORT_VAR_TRANSPORT_STATUS,
-			     "CurrentTransportStatus");
-	upnp_append_variable(event, TRANSPORT_VAR_TRANSPORT_PLAY_SPEED,
-			     "CurrentSpeed");
-	return 0;
+	pthread_mutex_lock(&transport_mutex);
+	upnp_add_response(event, "CurrentTransportState", VariableContainer_get(state_variables_, TRANSPORT_VAR_TRANSPORT_STATE, NULL));
+	upnp_add_response(event, "CurrentTransportStatus", VariableContainer_get(state_variables_, TRANSPORT_VAR_TRANSPORT_STATUS, NULL));
+	upnp_add_response(event, "CurrentSpeed", VariableContainer_get(state_variables_, TRANSPORT_VAR_TRANSPORT_PLAY_SPEED, NULL));
+	pthread_mutex_unlock(&transport_mutex);
+	return event->status;
 }
 
 static int get_current_transportactions(struct action_event *event)
@@ -724,7 +721,7 @@ static void *thread_update_track_time(void *userdata) {
 		service_lock();
 		gint64 duration, position;
 		const int pos_result = output_get_position(&duration, &position);
-		if (pos_result == 0 && strlen(get_var(TRANSPORT_VAR_AV_URI)) > 0) {
+		if (pos_result == 0 && transport_state_ != TRANSPORT_STOPPED && strlen(get_var(TRANSPORT_VAR_AV_URI)) > 0) {
 			if (duration != last_duration) {
 				print_upnp_time(tbuf, sizeof(tbuf), duration);
 				replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, tbuf);
@@ -750,18 +747,18 @@ static int get_position_info(struct action_event *event)
 		return -1;
 	}
 
-	upnp_append_variable(event, TRANSPORT_VAR_CUR_TRACK, "Track");
-	upnp_append_variable(event, TRANSPORT_VAR_CUR_TRACK_DUR,
-			     "TrackDuration");
-	upnp_append_variable(event, TRANSPORT_VAR_CUR_TRACK_META,
-			     "TrackMetaData");
-	upnp_append_variable(event, TRANSPORT_VAR_CUR_TRACK_URI, "TrackURI");
-	upnp_append_variable(event, TRANSPORT_VAR_REL_TIME_POS, "RelTime");
-	upnp_append_variable(event, TRANSPORT_VAR_ABS_TIME_POS, "AbsTime");
-	upnp_append_variable(event, TRANSPORT_VAR_REL_CTR_POS, "RelCount");
-	upnp_append_variable(event, TRANSPORT_VAR_ABS_CTR_POS, "AbsCount");
+	pthread_mutex_lock(&transport_mutex);
+	upnp_add_response(event, "Track", VariableContainer_get(state_variables_, TRANSPORT_VAR_CUR_TRACK, NULL));
+	upnp_add_response(event, "TrackDuration", VariableContainer_get(state_variables_, TRANSPORT_VAR_CUR_TRACK_DUR, NULL));
+	upnp_add_response(event, "TrackMetaData", VariableContainer_get(state_variables_, TRANSPORT_VAR_CUR_TRACK_META, NULL));
+	upnp_add_response(event, "TrackURI", VariableContainer_get(state_variables_, TRANSPORT_VAR_CUR_TRACK_URI, NULL));
+	upnp_add_response(event, "RelTime", VariableContainer_get(state_variables_, TRANSPORT_VAR_REL_TIME_POS, NULL));
+	upnp_add_response(event, "AbsTime", VariableContainer_get(state_variables_, TRANSPORT_VAR_ABS_TIME_POS, NULL));
+	upnp_add_response(event, "RelCount", VariableContainer_get(state_variables_, TRANSPORT_VAR_REL_CTR_POS, NULL));
+	upnp_add_response(event, "AbsCount", VariableContainer_get(state_variables_, TRANSPORT_VAR_ABS_CTR_POS, NULL));
 
-	return 0;
+	pthread_mutex_unlock(&transport_mutex);
+	return event->status;
 }
 
 static int get_device_caps(struct action_event *event)
@@ -822,13 +819,18 @@ static void inform_play_transition_from_output(enum PlayFeedback fb, const char 
 		break;
 	case PLAY_STOPPED:
 		if (transport_state_ == TRANSPORT_STOPPED) break;
-		replace_transport_uri_and_meta("", "");
-		replace_current_uri_and_meta("", "");
+		/* Preserve the completed resource until the controller explicitly
+		 * resets it. End-of-track polling must still identify that track. */
+		{
+			gint64 duration, position;
+			if (output_get_position(&duration, &position) == 0) {
+				char timebuf[32];
+				print_upnp_time(timebuf, sizeof(timebuf), position);
+				replace_var(TRANSPORT_VAR_REL_TIME_POS, timebuf);
+			}
+		}
 		replace_var(TRANSPORT_VAR_NEXT_AV_URI, "");
 		replace_var(TRANSPORT_VAR_NEXT_AV_URI_META, "");
-		replace_var(TRANSPORT_VAR_CUR_TRACK_DUR, kZeroTime);
-		replace_var(TRANSPORT_VAR_CUR_MEDIA_DUR, kZeroTime);
-		replace_var(TRANSPORT_VAR_REL_TIME_POS, kZeroTime);
 		change_transport_state(TRANSPORT_STOPPED);
 		break;
 
@@ -1054,7 +1056,7 @@ struct service *upnp_transport_get_service(void) {
 		 EV_NO, DATATYPE_I4, NULL, NULL },
 		{TRANSPORT_VAR_LAST_CHANGE, "LastChange", "<Event xmlns=\"urn:schemas-upnp-org:metadata-1-0/AVT/\"/>",
 		 EV_YES, DATATYPE_STRING, NULL, NULL },
-		{TRANSPORT_VAR_AAT_SEEK_MODE, "A_ARG_TYPE_SeekMode", "TRACK_NR",
+		{TRANSPORT_VAR_AAT_SEEK_MODE, "A_ARG_TYPE_SeekMode", "REL_TIME",
 		 EV_NO, DATATYPE_STRING, aat_seekmodi, NULL },
 		{TRANSPORT_VAR_AAT_SEEK_TARGET, "A_ARG_TYPE_SeekTarget", "",
 		 EV_NO, DATATYPE_STRING, NULL, NULL },
