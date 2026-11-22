@@ -42,6 +42,12 @@
 #include "upnp_connmgr.h"
 #include "output_module.h"
 #include "output_gstreamer.h"
+#include "dsd_output.h"
+
+static gchar *dsd_mode = NULL;
+static gboolean fixed_volume = FALSE;
+static gint http_retries = 3;
+static gint http_timeout = 15;
 
 static double buffer_duration = 0.0; /* Buffer disbled by default, see #182 */
 
@@ -106,7 +112,9 @@ static void scan_mime_list(void)
 			for (guint i = 0; i < gst_caps_get_size(capabilities); i++) {
 				GstStructure* structure = gst_caps_get_structure(capabilities, i);
 
-				register_mime_type(gst_structure_get_name(structure));
+				const char *mime = gst_structure_get_name(structure);
+				if (strstr(mime, "dsd") || strstr(mime, "dff") || strstr(mime, "dsf")) continue;
+				register_mime_type(mime);
 			}
 
 			gst_caps_unref(capabilities);
@@ -120,7 +128,13 @@ static void scan_mime_list(void)
 	// "audio/" but are not explicitly supported by gstreamer. Let's just
 	// tell the controller that we can handle everything "audio/*" and hope
 	// for the best.
-	register_mime_type("audio/*");
+	/* WAV aliases explicitly required by some UPnP clients. */
+	GstElementFactory *wav = gst_element_factory_find("wavparse");
+	if (wav) {
+		register_mime_type("audio/wav");
+		register_mime_type("audio/x-wav");
+		gst_object_unref(wav);
+	}
 }
 
 static GstElement *player_ = NULL;
@@ -472,6 +486,14 @@ static GOptionEntry option_entries[] = {
         { "gstout-buffer-duration", 0, 0, G_OPTION_ARG_DOUBLE, &buffer_duration,
           "The size of the buffer in seconds. Set to zero to disable buffering.",
           NULL },
+        { "gstout-dsd-mode", 0, 0, G_OPTION_ARG_STRING, &dsd_mode,
+          "DSD output: off, native or dop (requires DFF parser; direct ALSA)", NULL },
+        { "gstout-fixed-volume", 0, 0, G_OPTION_ARG_NONE, &fixed_volume,
+          "Disable digital attenuation and resampling; use external volume control", NULL },
+        { "gstout-http-retries", 0, 0, G_OPTION_ARG_INT, &http_retries,
+          "Bounded souphttpsrc retries (0 disables)", NULL },
+        { "gstout-http-timeout", 0, 0, G_OPTION_ARG_INT, &http_timeout,
+          "HTTP I/O timeout in seconds", NULL },
         { "gstout-initial-volume-db", 0, 0, G_OPTION_ARG_DOUBLE, &initial_db,
           "GStreamer initial volume in decibel (e.g. 0.0 = max; -6 = 1/2 max) ",
 	  NULL },
@@ -524,6 +546,7 @@ static int output_gstreamer_get_position(gint64 *track_duration,
 }
 
 static int output_gstreamer_get_volume(float *v) {
+	if (fixed_volume) { *v = 1.0f; return 0; }
 	double volume;
 	g_object_get(player_, "volume", &volume, NULL);
 	Log_info("gstreamer", "Query volume fraction: %f", volume);
@@ -531,17 +554,20 @@ static int output_gstreamer_get_volume(float *v) {
 	return 0;
 }
 static int output_gstreamer_set_volume(float value) {
+	if (fixed_volume) return value == 1.0f ? 0 : -1;
 	Log_info("gstreamer", "Set volume fraction to %f", value);
 	g_object_set(player_, "volume", (double) value, NULL);
 	return 0;
 }
 static int output_gstreamer_get_mute(int *m) {
+	if (fixed_volume) { *m = 0; return 0; }
 	gboolean val;
 	g_object_get(player_, "mute", &val, NULL);
 	*m = val;
 	return 0;
 }
 static int output_gstreamer_set_mute(int m) {
+	if (fixed_volume) return m == 0 ? 0 : -1;
 	Log_info("gstreamer", "Set mute to %s", m ? "on" : "off");
 	g_object_set(player_, "mute", (gboolean) m, NULL);
 	return 0;
@@ -569,11 +595,51 @@ static void prepare_next_stream(GstElement *obj, gpointer userdata) {
 	}
 }
 
+static void configure_http_source(GstElement *playbin, GstElement *source, gpointer unused) {
+	(void)playbin; (void)unused;
+	GstElementFactory *factory = gst_element_get_factory(source);
+	if (!factory || strcmp(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "souphttpsrc") != 0) return;
+	GObjectClass *klass = G_OBJECT_GET_CLASS(source);
+	if (g_object_class_find_property(klass, "retries"))
+		g_object_set(source, "retries", http_retries, NULL);
+	if (g_object_class_find_property(klass, "timeout"))
+		g_object_set(source, "timeout", (guint)http_timeout, NULL);
+}
+
 static int output_gstreamer_init(void)
 {
 	GstBus *bus;
 
 	SongMetaData_init(&song_meta_);
+	const gboolean native = dsd_mode && !strcmp(dsd_mode, "native");
+	const gboolean dop = dsd_mode && !strcmp(dsd_mode, "dop");
+	if (dsd_mode && !native && !dop && strcmp(dsd_mode, "off")) {
+		Log_error("gstreamer", "Invalid DSD mode: %s", dsd_mode); return 1;
+	}
+	if (http_retries < 0 || http_retries > 10 || http_timeout <= 0 || http_timeout > 300) {
+		Log_error("gstreamer", "Invalid HTTP retry or timeout setting"); return 1;
+	}
+	if (native || dop) {
+		guint major, minor, micro, nano;
+		gst_version(&major, &minor, &micro, &nano);
+		if (major < 1 || (major == 1 && minor < 24)) {
+			Log_error("gstreamer", "DSD requires GStreamer >= 1.24"); return 1;
+		}
+		GstElementFactory *parser = gst_element_factory_find("dffparse");
+		if (!parser) { Log_error("gstreamer", "DSD requires dffparse (see installation guide)"); return 1; }
+		gst_plugin_feature_set_rank(GST_PLUGIN_FEATURE(parser), GST_RANK_PRIMARY + 100);
+		gst_object_unref(parser);
+		/* Disallow the common libav DSD-to-PCM decoder paths. */
+		const char *decoders[] = {"avdec_dsd_lsbf", "avdec_dsd_msbf", "avdec_dsd_lsbf_planar", "avdec_dsd_msbf_planar", NULL};
+		for (int i = 0; decoders[i]; ++i) {
+			GstPluginFeature *f = gst_registry_lookup_feature(gst_registry_get(), decoders[i]);
+			if (f) { gst_plugin_feature_set_rank(f, GST_RANK_NONE); gst_object_unref(f); }
+		}
+		fixed_volume = TRUE;
+	}
+	if (fixed_volume && (!audio_sink || strcmp(audio_sink, "alsasink") || !audio_device || strncmp(audio_device, "hw:", 3) || audio_pipe || initial_db != 0.0)) {
+		Log_error("gstreamer", "Fixed/DSD mode requires explicit alsasink, hw: device and unity gain"); return 1;
+	}
 	scan_mime_list();
 
 #if (GST_VERSION_MAJOR < 1)
@@ -605,6 +671,11 @@ static int output_gstreamer_init(void)
 			 "Buffering disabled (--gstout-buffer-duration)");
         }
 
+	if (fixed_volume) {
+		/* AUDIO | NATIVE_AUDIO: do not insert volume, resample or convert. */
+		g_object_set(player_, "flags", 0x02 | 0x20 | (buffer_duration > 0 ? 0x100 : 0), NULL);
+	}
+	g_signal_connect(player_, "source-setup", G_CALLBACK(configure_http_source), NULL);
 	bus = gst_pipeline_get_bus(GST_PIPELINE(player_));
 	gst_bus_add_watch(bus, my_bus_callback, NULL);
 	gst_object_unref(bus);
@@ -631,7 +702,15 @@ static int output_gstreamer_init(void)
 		  if (audio_device != NULL) {
 		    g_object_set (G_OBJECT(sink), "device", audio_device, NULL);
 		  }
-		  g_object_set (G_OBJECT (player_), "audio-sink", sink, NULL);
+		  if (native || dop) {
+		    GstElement *bin = gm_dsd_sink_new(sink, dop);
+		    if (!bin) { Log_error("gstreamer", "Cannot construct DSD output"); return 1; }
+		    gst_object_ref_sink(bin);
+		    g_object_set(player_, "audio-sink", bin, NULL);
+		    gst_object_unref(bin);
+		  } else {
+		    g_object_set (G_OBJECT (player_), "audio-sink", sink, NULL);
+		  }
 		}
 	}
 	if (audio_pipe != NULL) {
@@ -670,6 +749,22 @@ static int output_gstreamer_init(void)
 		return 1;
 	}
 
+	if (native || dop) {
+		GstElement *sink = NULL;
+		g_object_get(player_, "audio-sink", &sink, NULL);
+		GstPad *pad = sink ? gst_element_get_static_pad(sink, "sink") : NULL;
+		GstCaps *test = gst_caps_from_string("audio/x-dsd,format=DSDU8,layout=interleaved,reversed-bytes=false,rate=352800,channels=2");
+		GstCaps *caps = pad ? gst_pad_query_caps(pad, test) : NULL;
+		gboolean capable = caps && !gst_caps_is_empty(caps);
+		if (caps) gst_caps_unref(caps);
+		gst_caps_unref(test);
+		if (pad) gst_object_unref(pad);
+		if (sink) gst_object_unref(sink);
+		if (!capable) { Log_error("gstreamer", "Selected output does not advertise DSD64 path"); return 1; }
+		register_mime_type("audio/dff");
+		register_mime_type("audio/x-dff");
+		Log_info("gstreamer", "Experimental DFF output: %s; volume fixed", dsd_mode);
+	}
 	g_signal_connect(G_OBJECT(player_), "about-to-finish",
 			 G_CALLBACK(prepare_next_stream), NULL);
 	output_gstreamer_set_mute(0);
