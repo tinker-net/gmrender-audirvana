@@ -183,7 +183,29 @@ static int handle_subscription_request(struct upnp_device *priv,
 	int result = -1;
 	pthread_mutex_lock(&(priv->device_mutex));
 
-	// There is really only one variable evented: LastChange
+	/* ConnectionManager uses ordinary evented state variables, not LastChange. */
+	if (!srv->event_xml_ns) {
+		int count = 0, n = 0;
+		const struct var_meta *meta = VariableContainer_get_meta(srv->variable_container, &count);
+		const char **names = g_new0(const char *, count);
+		const char **values = g_new0(const char *, count);
+		pthread_mutex_lock(srv->service_mutex);
+		for (int i = 0; i < count; ++i) {
+			if (meta[i].sendevents != EV_YES) continue;
+			names[n] = meta[i].name;
+			values[n++] = xmlescape(VariableContainer_get(srv->variable_container, i, NULL), 0);
+		}
+		pthread_mutex_unlock(srv->service_mutex);
+		rc = UpnpAcceptSubscription(priv->device_handle, udn, serviceId, names, values, n,
+		                            UpnpSubscriptionRequest_get_SID_cstr(sr_event));
+		for (int i = 0; i < n; ++i) free((char *)values[i]);
+		g_free(names); g_free(values);
+		pthread_mutex_unlock(&priv->device_mutex);
+		if (rc != UPNP_E_SUCCESS) Log_error("upnp", "ConnectionManager subscription: %s (%d)", UpnpGetErrorMessage(rc), rc);
+		return rc == UPNP_E_SUCCESS ? 0 : -1;
+	}
+
+	// AVTransport and RenderingControl use LastChange.
 	const char *eventvar_names[] = {
 		"LastChange",
 		NULL
@@ -206,7 +228,11 @@ static int handle_subscription_request(struct upnp_device *priv,
 		// Send over all variables except "LastChange" itself. Also all
 		// A_ARG_TYPE variables are not evented.
 		if (value && strcmp("LastChange", name) != 0
-		    && strncmp("A_ARG_TYPE_", name, strlen("A_ARG_TYPE_")) != 0) {
+		    && strncmp("A_ARG_TYPE_", name, strlen("A_ARG_TYPE_")) != 0
+		    && strcmp("RelativeTimePosition", name) != 0
+		    && strcmp("AbsoluteTimePosition", name) != 0
+		    && strcmp("RelativeCounterPosition", name) != 0
+		    && strcmp("AbsoluteCounterPosition", name) != 0) {
 			UPnPLastChangeBuilder_add(builder, name, value);
 		}
 	}
@@ -240,11 +266,12 @@ int upnp_device_notify(struct upnp_device *device,
                        const char **varnames,
                        const char **varvalues, int varcount)
 {
-        UpnpNotify(device->device_handle,
-                   device->upnp_device_descriptor->udn, serviceID,
-		   varnames, varvalues, varcount);
-
-	return 0;
+	int rc = UpnpNotify(device->device_handle,
+	                    device->upnp_device_descriptor->udn, serviceID,
+	                    varnames, varvalues, varcount);
+	if (rc != UPNP_E_SUCCESS)
+		Log_error("upnp", "NOTIFY %s failed: %s (%d)", serviceID, UpnpGetErrorMessage(rc), rc);
+	return rc;
 }
 
 
