@@ -20,6 +20,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools meson ninja-build g++ gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - name: Check installation and switcher shell syntax
+        run: sh -n scripts/install-pi.sh scripts/switch-renderer.sh scripts/install-dsd-parser.sh
       - name: Build renderer
         run: |
           ./autogen.sh
