@@ -37,7 +37,7 @@ jobs:
           python3 tests/make_dff.py /tmp/gmrender-fixture.dff
           cc -Wall -Wextra -o /tmp/dff-pipeline tests/dff_pipeline.c src/dsd_output.c $(pkg-config --cflags --libs gstreamer-app-1.0 gstreamer-base-1.0)
           /tmp/dff-pipeline file:///tmp/gmrender-fixture.dff
-          python3 -m http.server 49801 --directory /tmp --bind 127.0.0.1 > /tmp/dff-http.log 2>&1 &
+          python3 tests/dff_http_server.py /tmp/gmrender-fixture.dff --port=49801 > /tmp/dff-http.log 2>&1 &
           http_pid=$!
           trap 'kill "$http_pid" 2>/dev/null || true; cat /tmp/dff-http.log' EXIT
           for i in $(seq 1 20); do curl -fsSI http://127.0.0.1:49801/gmrender-fixture.dff >/dev/null && break; sleep 1; done
