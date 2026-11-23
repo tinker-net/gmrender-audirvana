@@ -1,93 +1,91 @@
-# Raspberry Pi / DietPi — preview 0.2
+# Raspberry Pi / DietPi — reversible preview
 
-A headless UPnP/AV renderer for Audirvana. One gmediarender process; no MPD
-and no OpenHome. This preview includes native DFF/DSD and DoP, clocked PCM
-track transitions, HTTP error reporting and bounded source retries.
-It is still an interoperability test build, not a certified final release.
+This guide installs **gmrender-audirvana alongside the existing gmediarender**.
+It does not replace the old binary, configuration or systemd unit.
 
-## Install everything together
+## Important distinction
 
-Native DSD and DoP require GStreamer 1.24 or later (Debian Trixie recommended).
-The installer builds the renderer and the pinned LGPL DFF parser, installs
-them under /opt/gmrender-audirvana and creates a separate systemd service
-running as an unprivileged audio user. It does not replace the distribution's
-gmediarender or stop it. It does not enable the new service at boot.
+| | Original renderer | gmrender-audirvana |
+|---|---|---|
+| Files | Left in their existing location | `/opt/gmrender-audirvana` |
+| Service | `gmediarender.service` (default; configurable) | `gmrender-audirvana.service` |
+| Systemd configuration | Unmodified | New independent unit |
+| Enabled at boot | Unmodified | Not enabled by installer |
+| DAC | Same hardware, but only one process should open it at a time | Same hardware |
+
+The installer uses `apt` to add build/runtime prerequisites. This does
+not overwrite the original application files, but system packages and shared
+libraries can be updated by the distribution's dependency resolution.
+
+The switcher assumes the existing renderer is run by a systemd service.
+If the original runs manually or under another service name, identify it
+before switching; do **not** assume `gmediarender.service` exists.
+
+## Install once (Debian / DietPi with GStreamer >= 1.24 for DSD)
 
 ```sh
-sudo apt-get install -y git
-git clone --branch preview-0.2 https://github.com/tinker-net/gmrender-audirvana.git
+git clone -b preview-0.2 https://github.com/tinker-net/gmrender-audirvana.git
 cd gmrender-audirvana
-sh scripts/install-pi.sh hw:CARD=D10s,DEV=0 native
-sudo systemctl stop gmediarender
-sudo systemctl start gmrender-audirvana
-sudo journalctl -u gmrender-audirvana -f
+sh scripts/install-pi.sh "hw:CARD=D10s,DEV=0" native
 ```
 
-For a different device, run `aplay -l` and use its card name. The default
-configuration is intended for the Topping D10s. The installed renderer is
-named gmrender-audirvana and uses a persistent UUID and port 49500.
+You can replace the ALSA device name using `aplay -l`. To use the experimental
+DoP output, select `dop` instead of `native`. To omit DSD, select `off`.
 
-## Switching DSD output
+The installer prepares a new unprivileged service but **does not stop or
+enable/disable the original service**. The new service is not started yet.
 
-Edit `sudo nano /etc/default/gmrender-audirvana`. The supported values are:
-
-- GM_DSD_MODE=native — DFF to native ALSA DSD. No PCM conversion.
-- GM_DSD_MODE=dop — DFF to correctly framed DoP PCM carrier.
-- GM_DSD_MODE=off — PCM-only advertisement.
-
-Use `sudo systemctl restart gmrender-audirvana` after a change. Retain the
-same UUID. Only use DoP with a DAC known to support DoP at the requested
-rate; carrier detection is a property of hardware, not ALSA PCM caps.
-Start with low external amplifier volume. This preview intentionally fixes
-digital volume to unity and does not digitally mute or attenuate DSD or DoP.
-Use the DAC/amplifier volume, not Audirvana's software volume. The strict
-native PCM path will reject formats that the DAC cannot accept directly.
-The optional DFF parser is installed at a pinned commit and lives under
-the preview's private plugin directory, not in the system GStreamer registry.
-
-## Verification with Audirvana
-
-Select the gmrender-audirvana zone. In the device information, check for
-`http-get:*:audio/dff:*` and WAV support. Keep software volume at 100%.
-Try a PCM album, DSD64 and DSD128, then higher DSD rates only if your DAC
-supports them. Test both native and Universal Gapless settings. Verify
-position, metadata, pause, seek, next track, natural end, and history.
-
-While playing, collect actual ALSA format and rate:
+## Switch in one command
 
 ```sh
+/opt/gmrender-audirvana/bin/gmrender-switch status
+
+# Test the new renderer:
+sudo /opt/gmrender-audirvana/bin/gmrender-switch new
+
+# Revert at any time:
+sudo /opt/gmrender-audirvana/bin/gmrender-switch original
+```
+
+Switching releases the DAC and starts the other service. If the preview
+fails at startup, the switcher attempts to restore the original automatically.
+
+If your existing service has a different name, pass it as the final argument:
+
+```sh
+systemctl list-unit-files --type=service | grep -i 'gmrender'
+sudo /opt/gmrender-audirvana/bin/gmrender-switch new my-existing-renderer.service
+sudo /opt/gmrender-audirvana/bin/gmrender-switch original my-existing-renderer.service
+```
+
+These commands **do not change** the service's boot-time enabled/disabled
+setting. On reboot, the existing enabled renderer will start normally;
+the preview does not auto-start unless you enable it separately.
+
+## Logs and troubleshooting
+
+```sh
+sudo journalctl -u gmrender-audirvana -f
 cat /proc/asound/card*/pcm*p/sub*/hw_params
 ```
 
-Native DSD must show a DSD_U* format (e.g. DSD_U32_BE); for DoP it must
-show a PCM carrier at the appropriate rate (DSD64 -> 176400 Hz), and the
-DAC should indicate DSD. PCM frequency and sample representation must
-match the requested source; no software resampler is inserted in fixed mode.
+In Audirvāna select the zone **gmrender-audirvana**. Test PCM first with
+an external amplifier at low volume. In native or DoP modes, digital gain is
+fixed at unity: adjust listening level using your amplifier, not Audirvāna.
 
-```sh
-sudo journalctl -u gmrender-audirvana -b --no-pager > ~/gmrender-audirvana.log
-```
+If the original is not managed by systemd, stop its process yourself before
+opening the DAC with the new renderer. No systemd switch can reliably control
+a renderer it does not own.
 
-The preview is compiled with SOAP action logging. Logs may contain URLs with
-credentials or signed query parameters, so redact them before sharing.
+## Current verification scope
 
-## Rollback
+Automated CI covers compilation, SOAP/control responses, PCM test playback,
+URI transitions, HTTP error reporting and simulated native DSD/DoP paths
+(including DFF over HTTP with Range support). **It has not verified real
+Audirvāna sessions or real Topping D10s/E30 II Lite DSD output.**
 
-```sh
-sudo systemctl stop gmrender-audirvana
-sudo systemctl start gmediarender
-```
+This is a preview, not a claim of perfect bit-perfect performance or
+complete recovery from arbitrary network failures.
 
-## Test scope and limitations
-
-CI uses simulated sinks, deterministic synthetic DFF and PCM files, and
-SOAP/HTTP regression tests. It does not have a physical USB DAC or a copy
-of Audirvana. Relevant remaining validation includes negotiation on actual DACs,
-DSD gapless, Universal Gapless streaming, and HTTP interruptions that cannot be
-resumed with a byte range. The renderer does not falsely claim successful
-software gain changes in fixed mode. Hardware mixer integration is not part
-of this preview. Only stereo uncompressed DFF is explicitly announced; DST
-and DSF as a direct UPnP input are not asserted. Unaligned DSD words are
-rejected rather than silently truncating samples. The parser is a separate
-LGPL plugin from dv1/gst-dsd-media-parsers; its source and license are
-available at https://github.com/dv1/gst-dsd-media-parsers/tree/896c795abe568c0549d7e42fdae2876f96cef3d7.
+See `scripts/install-pi.sh` and `scripts/switch-renderer.sh` for the exact
+changes made on the Raspberry Pi.
