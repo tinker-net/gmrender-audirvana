@@ -1,3 +1,33 @@
+# gmrender-audirvana — Audirvāna-focused experimental UPnP renderer
+
+This is an **unofficial, experimental fork** of
+[gmrender-resurrect](https://github.com/hzeller/gmrender-resurrect),
+with additional UPnP/AVTransport interoperability fixes, PCM/DSD output
+work, an optional ALSA mixer control, and a reversible DietPi installer.
+
+**Development and tests:** Changes were developed with AI assistance and
+reviewed through automated CI and hands-on tests on a Raspberry Pi running
+DietPi/Debian Trixie with a Topping D10s USB DAC. The actual D10s reported
+`DSD_U32_BE` at 88,200 Hz with two channels during DSD64 playback;
+PCM playback, UPnP volume via ALSA, and repeated PCM-to-DSD changes have
+also been observed working. These results do **not** establish general
+compatibility, gapless performance on real albums, unattended long-run
+stability or bit-perfect output under DAC attenuation.
+
+**Start here:** [Raspberry Pi / DietPi quickstart](docs/PI-QUICKSTART.md).
+The installer builds a separate service at `/opt/gmrender-audirvana`,
+does not overwrite the original gmediarender installation, and provides
+a command to switch back to the original renderer.
+
+The tested development branch is **`preview-0.2`**; the repository's
+`master` branch tracks the original gmrender-resurrect base. This project
+is not affiliated with or endorsed by Audirvāna or the upstream maintainer.
+The original open-source license and attributions are retained.
+
+---
+
+## Original gmrender-resurrect README (upstream text)
+
 Headless UPnP Renderer
 ----------------------
 
