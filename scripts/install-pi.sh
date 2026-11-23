@@ -66,8 +66,11 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
+sudo install -m 755 scripts/switch-renderer.sh "$prefix/bin/gmrender-switch"
 echo "Installed. Original gmediarender was not changed or stopped."
 echo "Adjust amplifier to a low level before testing, especially DoP."
-echo "Start: sudo systemctl stop gmediarender && sudo systemctl start gmrender-audirvana"
+echo "Preview on:  sudo $prefix/bin/gmrender-switch new"
 echo "Logs:  sudo journalctl -u gmrender-audirvana -f"
-echo "Undo:  sudo systemctl stop gmrender-audirvana && sudo systemctl start gmediarender"
+echo "Original on: sudo $prefix/bin/gmrender-switch original"
+echo "Status:      $prefix/bin/gmrender-switch status"
+echo "If your original systemd unit has a different name, pass it as the last argument."
