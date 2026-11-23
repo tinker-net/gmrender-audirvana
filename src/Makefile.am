@@ -15,7 +15,8 @@ gmediarender_SOURCES = main.c git-version.h \
 
 if HAVE_GST
 gmediarender_SOURCES += \
-	output_gstreamer.c  output_gstreamer.h dsd_output.c dsd_output.h
+	output_gstreamer.c  output_gstreamer.h dsd_output.c dsd_output.h \
+	alsa_volume.c alsa_volume.h
 endif
 
 BUILT_SOURCES = git-version.h
@@ -26,5 +27,5 @@ git-version.h: $(wildcard $(top_srcdir)/.git/HEAD $(top_srcdir)/.git/refs/heads/
 	cmp -s $@ $@-new || cp $@-new $@; \
 	rm $@-new)
 
-AM_CPPFLAGS = $(GLIB_CFLAGS) $(GST_CFLAGS) $(LIBUPNP_CFLAGS) -DPKG_DATADIR=\"$(datadir)/gmediarender\"
-gmediarender_LDADD = $(GLIB_LIBS) $(GST_LIBS) $(LIBUPNP_LIBS)
+AM_CPPFLAGS = $(GLIB_CFLAGS) $(GST_CFLAGS) $(LIBUPNP_CFLAGS) $(ALSA_CFLAGS) -DPKG_DATADIR=\"$(datadir)/gmediarender\"
+gmediarender_LDADD = $(GLIB_LIBS) $(GST_LIBS) $(LIBUPNP_LIBS) $(ALSA_LIBS)
