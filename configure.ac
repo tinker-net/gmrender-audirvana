@@ -74,6 +74,11 @@ AC_SUBST(HAVE_GST)
 AM_CONDITIONAL(HAVE_GST, test x$HAVE_GST = xyes)
 
 
+PKG_CHECK_MODULES(ALSA, alsa, [
+  AC_SUBST(ALSA_CFLAGS)
+  AC_SUBST(ALSA_LIBS)
+], [AC_MSG_ERROR([libasound development package is required])])
+
 LIBUPNP_REQUIRED=1.6.0
 AC_ARG_WITH( libupnp,
   AC_HELP_STRING([--without-libupnp],[compile without libupnp support]),
