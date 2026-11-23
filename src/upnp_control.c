@@ -838,9 +838,12 @@ struct service *upnp_control_get_service(void) {
 void upnp_control_init(struct upnp_device *device) {
 	struct service *service = upnp_control_get_service();
 
-	// Set initial volume.
+	// Query the output backend, including an optional external ALSA mixer.
+	int is_muted = 0;
+	if (output_get_mute(&is_muted) == 0)
+		replace_var(CONTROL_VAR_MUTE, is_muted ? "1" : "0");
 	float volume_fraction = 0;
-	if (output_get_volume(&volume_fraction) == 0) {
+	if (output_get_volume(&volume_fraction) == 0 && volume_fraction > 0) {
 		Log_info("control", "Output initial volume is %f; setting "
 			 "control variables accordingly.", volume_fraction);
 		change_volume_decibel(20 * log(volume_fraction) / log(10));
