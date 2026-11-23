@@ -43,9 +43,11 @@
 #include "output_module.h"
 #include "output_gstreamer.h"
 #include "dsd_output.h"
+#include "alsa_volume.h"
 
 static gchar *dsd_mode = NULL;
 static gboolean fixed_volume = FALSE;
+static gchar *alsa_mixer_name = NULL;
 static gint http_retries = 3;
 static gint http_timeout = 15;
 
@@ -565,6 +567,8 @@ static GOptionEntry option_entries[] = {
           "DSD output: off, native or dop (requires DFF parser; direct ALSA)", NULL },
         { "gstout-fixed-volume", 0, 0, G_OPTION_ARG_NONE, &fixed_volume,
           "Disable digital attenuation and resampling; use external volume control", NULL },
+        { "gstout-alsa-mixer-control", 0, 0, G_OPTION_ARG_STRING, &alsa_mixer_name,
+          "ALSA mixer name to control volume while keeping GStreamer at unity", NULL },
         { "gstout-http-retries", 0, 0, G_OPTION_ARG_INT, &http_retries,
           "Bounded souphttpsrc retries (0 disables)", NULL },
         { "gstout-http-timeout", 0, 0, G_OPTION_ARG_INT, &http_timeout,
@@ -621,6 +625,12 @@ static int output_gstreamer_get_position(gint64 *track_duration,
 }
 
 static int output_gstreamer_get_volume(float *v) {
+	if (gm_alsa_volume_enabled()) {
+		double fraction;
+		if (gm_alsa_volume_get(&fraction)) return -1;
+		*v = (float)fraction;
+		return 0;
+	}
 	if (fixed_volume) { *v = 1.0f; return 0; }
 	double volume;
 	g_object_get(player_, "volume", &volume, NULL);
@@ -629,12 +639,14 @@ static int output_gstreamer_get_volume(float *v) {
 	return 0;
 }
 static int output_gstreamer_set_volume(float value) {
+	if (gm_alsa_volume_enabled()) return gm_alsa_volume_set(value);
 	if (fixed_volume) return value == 1.0f ? 0 : -1;
 	Log_info("gstreamer", "Set volume fraction to %f", value);
 	g_object_set(player_, "volume", (double) value, NULL);
 	return 0;
 }
 static int output_gstreamer_get_mute(int *m) {
+	if (gm_alsa_volume_enabled()) return gm_alsa_mute_get(m);
 	if (fixed_volume) { *m = 0; return 0; }
 	gboolean val;
 	g_object_get(player_, "mute", &val, NULL);
@@ -642,6 +654,7 @@ static int output_gstreamer_get_mute(int *m) {
 	return 0;
 }
 static int output_gstreamer_set_mute(int m) {
+	if (gm_alsa_volume_enabled()) return gm_alsa_mute_set(m);
 	if (fixed_volume) return m == 0 ? 0 : -1;
 	Log_info("gstreamer", "Set mute to %s", m ? "on" : "off");
 	g_object_set(player_, "mute", (gboolean) m, NULL);
@@ -706,6 +719,13 @@ static int output_gstreamer_init(void)
 	}
 	if (fixed_volume && (!audio_sink || strcmp(audio_sink, "alsasink") || !audio_device || strncmp(audio_device, "hw:", 3) || audio_pipe || initial_db != 0.0)) {
 		Log_error("gstreamer", "Fixed/DSD mode requires explicit alsasink, hw: device and unity gain"); return 1;
+	}
+	if (alsa_mixer_name && *alsa_mixer_name) {
+		if (!fixed_volume || !audio_device ||
+		    gm_alsa_volume_init(audio_device, alsa_mixer_name)) {
+			Log_error("gstreamer", "ALSA mixer control requires fixed volume and a valid hw: mixer");
+			return 1;
+		}
 	}
 	scan_mime_list();
 
@@ -837,11 +857,12 @@ static int output_gstreamer_init(void)
 		if (!capable) { Log_error("gstreamer", "Selected output does not advertise DSD64 path"); return 1; }
 		register_mime_type("audio/dff");
 		register_mime_type("audio/x-dff");
-		Log_info("gstreamer", "Experimental DFF output: %s; volume fixed", dsd_mode);
+		Log_info("gstreamer", "Experimental DFF output: %s; GStreamer gain fixed", dsd_mode);
 	}
 	g_signal_connect(G_OBJECT(player_), "about-to-finish",
 			 G_CALLBACK(prepare_next_stream), NULL);
-	output_gstreamer_set_mute(0);
+	/* Preserve external ALSA mixer mute state on startup. */
+	if (!gm_alsa_volume_enabled()) output_gstreamer_set_mute(0);
 	if (initial_db < 0) {
 		output_gstreamer_set_volume(exp(initial_db / 20 * log(10)));
 	}
