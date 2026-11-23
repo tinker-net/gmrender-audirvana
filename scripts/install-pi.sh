@@ -2,6 +2,10 @@
 # Install alongside, not over, the distribution's gmediarender.
 # Usage: sh scripts/install-pi.sh [hw:CARD=D10s,DEV=0] [native|dop|off]
 set -eu
+# Allow DietPi root shells without requiring the sudo package.
+if [ "$(id -u)" -eq 0 ]; then
+  sudo() { "$@"; }
+fi
 device=${1:-hw:CARD=D10s,DEV=0}
 mode=${2:-native}
 prefix=/opt/gmrender-audirvana
@@ -13,7 +17,7 @@ sudo apt-get update
 sudo apt-get install -y git build-essential autoconf automake libtool pkg-config \
   libglib2.0-dev libupnp-dev libgstreamer1.0-dev \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-alsa \
-  gstreamer1.0-tools alsa-utils
+  gstreamer1.0-tools alsa-utils libasound2-dev
 if [ "$mode" != off ]; then
   sudo apt-get install -y libgstreamer-plugins-base1.0-dev meson ninja-build g++
   pkg-config --atleast-version=1.24 gstreamer-audio-1.0 || {
@@ -35,7 +39,7 @@ if ! sudo test -s /etc/gmrender-audirvana/uuid; then
 fi
 uuid=$(sudo cat /etc/gmrender-audirvana/uuid)
 if ! sudo test -e /etc/default/gmrender-audirvana; then
-  printf 'GM_DEVICE=%s\nGM_DSD_MODE=%s\nGM_UUID=%s\n' "$device" "$mode" "$uuid" | sudo tee /etc/default/gmrender-audirvana >/dev/null
+  printf 'GM_DEVICE=%s\nGM_DSD_MODE=%s\nGM_UUID=%s\nGM_ALSA_MIXER_CONTROL=\n' "$device" "$mode" "$uuid" | sudo tee /etc/default/gmrender-audirvana >/dev/null
 else
   echo "Existing /etc/default/gmrender-audirvana retained; check device and mode."
 fi
@@ -57,7 +61,7 @@ EnvironmentFile=/etc/default/gmrender-audirvana
 Environment=GST_PLUGIN_PATH=/opt/gmrender-audirvana/lib/gstreamer-1.0
 Environment=GST_REGISTRY=/run/gmrender-audirvana/registry.bin
 RuntimeDirectory=gmrender-audirvana
-ExecStart=/opt/gmrender-audirvana/bin/gmediarender --friendly-name=gmrender-audirvana --port=49500 --uuid=${GM_UUID} --gstout-audiosink=alsasink --gstout-audiodevice=${GM_DEVICE} --gstout-dsd-mode=${GM_DSD_MODE} --gstout-fixed-volume --gstout-initial-volume-db=0 --gstout-http-retries=3 --gstout-http-timeout=15 --logfile=stdout
+ExecStart=/opt/gmrender-audirvana/bin/gmediarender --friendly-name=gmrender-audirvana --port=49500 --uuid=${GM_UUID} --gstout-audiosink=alsasink --gstout-audiodevice=${GM_DEVICE} --gstout-dsd-mode=${GM_DSD_MODE} --gstout-fixed-volume --gstout-alsa-mixer-control=${GM_ALSA_MIXER_CONTROL} --gstout-initial-volume-db=0 --gstout-http-retries=3 --gstout-http-timeout=15 --logfile=stdout
 NoNewPrivileges=true
 Restart=on-failure
 RestartSec=5
