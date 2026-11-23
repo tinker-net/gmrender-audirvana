@@ -99,22 +99,37 @@ cat /proc/asound/card*/pcm*p/sub*/hw_params
 ```
 
 In Audirvāna select the zone **gmrender-audirvana**. Test PCM first with
-an external amplifier at low volume. In native or DoP modes, digital gain is
-fixed at unity: adjust listening level using your amplifier, not Audirvāna.
+an external amplifier at low volume. In native or DoP modes, GStreamer's
+digital gain is fixed at unity. If you explicitly configure a supported ALSA
+mixer, Audirvāna volume commands act on the DAC's mixer; otherwise use
+external volume control. Reduce the analog amplifier level before testing.
 
 If the original is not managed by systemd, stop its process yourself before
 opening the DAC with the new renderer. No systemd switch can reliably control
 a renderer it does not own.
 
-## Current verification scope
+## Current verification scope (23 November 2026)
 
 Automated CI covers compilation, SOAP/control responses, PCM test playback,
 URI transitions, HTTP error reporting and simulated native DSD/DoP paths
-(including DFF over HTTP with Range support). **It has not verified real
-Audirvāna sessions or real Topping D10s/E30 II Lite DSD output.**
+(including DFF over HTTP with Range support).
 
-This is a preview, not a claim of perfect bit-perfect performance or
-complete recovery from arbitrary network failures.
+**Hands-on testing on a Raspberry Pi running DietPi/Debian Trixie and a
+Topping D10s USB DAC with Audirvāna Studio:**
+PCM playback and high-rate upsampled PCM playback worked; the optional
+ALSA mixer volume control worked; DSD64 native playback was confirmed
+through ALSA `hw_params` showing `DSD_U32_BE`, 88,200 Hz, stereo; and
+repeated switching between PCM and DSD worked without reported problems.
+These findings are specific to that setup.
+
+A minor known issue remains: the initial UPnP volume event may be sent
+before the stored volume is updated from the DAC mixer. Real-world
+gapless transitions, prolonged unattended use, recovery from arbitrary
+network interruptions, DoP on the physical DAC, and bit-perfect output
+at attenuated mixer volume are not fully validated.
+
+This is an experimental preview, not an assertion of compatibility with
+every DAC or of perfect bit-perfect performance.
 
 See `scripts/install-pi.sh` and `scripts/switch-renderer.sh` for the exact
 changes made on the Raspberry Pi.
