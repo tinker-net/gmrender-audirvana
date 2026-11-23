@@ -35,6 +35,35 @@ DoP output, select `dop` instead of `native`. To omit DSD, select `off`.
 The installer prepares a new unprivileged service but **does not stop or
 enable/disable the original service**. The new service is not started yet.
 
+## Optional ALSA volume control (Topping D10s)
+
+The native DSD mode keeps GStreamer processing at unity. By default, UPnP
+volume requests other than 100% are refused (UPnP 601) because changing
+GStreamer volume could corrupt native DSD data. You can explicitly route
+UPnP volume and mute to the DAC's ALSA mixer instead:
+
+```sh
+# Example for the D10s; the trailing space is part of the control name:
+amixer -c D10s sget 'D10s '
+printf 'GM_ALSA_MIXER_CONTROL="D10s "\\n' >> /etc/default/gmrender-audirvana
+```
+
+The systemd service passes this configuration through
+`--gstout-alsa-mixer-control`. Re-run the installer to update the service
+unit if it predates ALSA volume support, then switch to the preview.
+
+The renderer reads the actual ALSA volume and mute state at startup. It
+**does not** automatically turn up the DAC's existing volume. Setting 100%
+in Audirvana may turn the DAC up to 0 dB, so reduce the analog playback
+volume before testing.
+
+This controls the USB device's ALSA mixer, not GStreamer's PCM samples.
+**A USB mixer exposed by ALSA is not automatically an analog hardware
+attenuator, nor does its presence guarantee bit-perfect output at
+attenuated levels or volume support with native DSD.** Test both on your
+particular DAC. Leave `GM_ALSA_MIXER_CONTROL` unset to preserve the
+fixed-volume path and use external volume control.
+
 ## Switch in one command
 
 ```sh
